@@ -1,0 +1,48 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ccmjs Teambuild",
+  "description": "Deklarative Einstellungen einer Teambildungs-App. JavaScript-Callbacks werden separat eingebunden.",
+  "type": "object",
+  "properties": {
+    "data": {
+      "type": "object",
+      "properties": {
+        "key": { "oneOf": [ { "type": "string", "pattern": "^[a-z][a-z0-9_]{0,31}$" },
+          { "type": "array", "minItems": 1, "items": { "type": "string", "pattern": "^[a-z][a-z0-9_]{0,31}$" } } ], "default": "teambuild" },
+        "store": { "type": "array", "description": "CCM-Datastore-Abhängigkeit, z. B. [ccm.store, {name, url, observe}].", "minItems": 1, "prefixItems": [{ "const": "ccm.store" }] },
+        "permissions": { "type": ["object", "null"], "description": "CCM-Berechtigungen nur für den erstmalig angelegten Datensatz. null bedeutet öffentlich." }
+      },
+      "required": ["store"]
+    },
+    "user": { "type": "array", "description": "Optionale CCM-User-Instanz. Ohne sie sind keine Änderungen möglich.", "prefixItems": [{ "const": "ccm.instance" }] },
+    "maxMembers": { "type": "integer", "minimum": 0, "default": 0, "description": "Personen pro Team; 0 bedeutet unbegrenzt." },
+    "maxTeams": { "type": "integer", "minimum": 0, "default": 0, "description": "Anzahl Teams; 0 bedeutet unbegrenzt." },
+    "teamNames": { "type": "array", "items": { "type": "string" }, "default": [] },
+    "editable": { "type": "boolean", "default": true, "title": "Eigenen Teamnamen ändern" },
+    "joinable": { "type": "boolean", "default": true, "title": "Beitreten erlauben" },
+    "leavable": { "type": "boolean", "default": true, "title": "Verlassen erlauben" },
+    "teamOverrides": {
+      "type": "array", "default": [], "description": "Eintrag 0 gilt für Team 1. Ausgelassene Flags erben die globale Einstellung.",
+      "items": { "type": ["object", "null"], "properties": {
+        "editable": { "type": "boolean" }, "joinable": { "type": "boolean" }, "leavable": { "type": "boolean" }
+      }, "additionalProperties": false }
+    },
+    "allowSwitch": { "type": "boolean", "default": true },
+    "nameMaxLength": { "type": "integer", "minimum": 1, "default": 60 },
+    "refreshInterval": { "type": "integer", "minimum": 0, "default": 30000 },
+    "retryLimit": { "type": "integer", "minimum": 1, "default": 12 },
+    "title": { "type": "string", "default": "Gemeinsam geht mehr." },
+    "description": { "type": "string", "default": "Finde dein Team und gestaltet gemeinsam, was als Nächstes kommt." },
+    "labels": { "type": "object", "additionalProperties": { "type": "string" }, "description": "Teilweise Textüberschreibungen; alle Schlüssel stehen in component.config.labels." },
+    "icons": { "type": "object", "additionalProperties": false, "properties": {
+      "join": { "type": "string" }, "leave": { "type": "string" }, "switch": { "type": "string" },
+      "edit": { "type": "string" }, "refresh": { "type": "string" }, "save": { "type": "string" }, "cancel": { "type": "string" }
+    } },
+    "theme": { "type": "object", "additionalProperties": false, "properties": {
+      "accent": { "type": "string" }, "accent-hover": { "type": "string" }, "background": { "type": "string" },
+      "surface": { "type": "string" }, "text": { "type": "string" }, "muted": { "type": "string" },
+      "border": { "type": "string" }, "radius": { "type": "string" }, "font": { "type": "string" }
+    } },
+    "css": { "type": "array", "prefixItems": [{ "const": "ccm.load" }] }
+  }
+}
