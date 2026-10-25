@@ -68,7 +68,6 @@ Bei Bedarf lassen sie sich mit `["ccm.load", "./resources/configs.mjs#realtime"]
 | `onchange` | nicht gesetzt | Callback nach erfolgreichem eigenem Beitritt, Austritt oder Umbenennen |
 | `onerror` | nicht gesetzt | Callback für Lade-, Speicher- und Beobachtungsfehler |
 
-Ein JSON-Schema für spätere App-Editoren liegt in `resources/config.schema.json`.
 Die Standardwerte und alle verfügbaren Texte und Icons sind direkt in der
 `config` der Komponentendatei dokumentiert. Teilweise Angaben für `labels`, `icons`
 und `theme` sind möglich. Funktionen sind nur für die optionalen Callbacks nötig.
