@@ -254,7 +254,8 @@ export const component = {
   },
   Instance: function () {
     let state = null, store, source, shell, content, status, dialog, unsubscribe;
-    let totals, sync, grid;
+    let totals, sync, grid, teamStat, peopleStat, syncMode, refreshButton;
+    const teamViews = new Map(), memberViews = new Map(), buttonViews = new WeakMap();
     let destroyed = false, initialized = false, readVersion = 0, refreshing, active;
     let refreshTimer, debounceTimer, refreshPending = false, draft = null, trigger = null;
     let userListeners, userListener;
@@ -360,7 +361,7 @@ export const component = {
     /** Detached, complete dataset for embedding applications; never exposes tokens. */
     this.getValue = () => structuredClone(state ?? emptyState(this.data.key));
     /** Public team numbers are 1-based, like their visible labels. */
-    this.getTeams = () => teamsFor(this.getValue(), this);
+    this.getTeams = () => teamsFor(state ?? emptyState(this.data.key), this);
     this.join = number => mutate({ type: "join", number });
     this.leave = () => mutate({ type: "leave" });
     this.rename = (number, name, expectedName) => mutate({ type: "rename", number, name, expectedName });
@@ -524,7 +525,12 @@ export const component = {
       // Keep the toolbar and authentication host connected while the team list refreshes.
       const toolbar = node("div", "toolbar");
       totals = node("div", "totals");
+      teamStat = stat(0, ""); peopleStat = stat(0, "");
+      totals.append(teamStat, peopleStat);
       sync = node("div", "sync");
+      syncMode = node("span", "sync-mode");
+      refreshButton = button("refresh", () => this.refresh({ reconnect: true }), "secondary");
+      sync.append(syncMode, refreshButton);
       toolbar.append(totals, sync);
       if (this.user) {
         const userArea = node("div", "user-area");
@@ -550,20 +556,124 @@ export const component = {
     };
     const announce = (value, error = false) => {
       if (!status || destroyed) return;
-      status.textContent = value;
-      status.classList.toggle("error", error);
+      setProperty(status, "textContent", String(value));
+      if (status.classList.contains("error") !== error) status.classList.toggle("error", error);
+    };
+    /** Patch a retained button, including its current action; never replace unchanged SVGs or labels. */
+    const updateButton = (result, action, className = "", label = this.labels[action]) => {
+      const view = buttonViews.get(result);
+      setProperty(result, "className", `button ${className}`.trim());
+      setAttribute(result, "data-action", action);
+      const markup = String(this.icons[action] ?? "");
+      if (view.markup !== markup) {
+        if (markup.trim().startsWith("<svg")) view.icon.innerHTML = markup;
+        else view.icon.textContent = markup;
+        view.markup = markup;
+      }
+      setProperty(view.label, "textContent", String(label ?? ""));
     };
     const button = (action, handler, className = "", label = this.labels[action]) => {
-      const result = node("button", `button ${className}`);
+      const result = node("button");
       result.type = "button";
-      result.dataset.action = action;
       const icon = node("span", "icon");
       icon.setAttribute("aria-hidden", "true");
-      if (String(this.icons[action] ?? "").trim().startsWith("<svg")) icon.innerHTML = this.icons[action];
-      else icon.textContent = this.icons[action] ?? "";
-      result.append(icon, node("span", "", label));
+      const caption = node("span");
+      result.append(icon, caption);
+      buttonViews.set(result, { icon, label: caption });
+      updateButton(result, action, className, label);
       result.addEventListener("click", () => { Promise.resolve().then(() => handler(result)).catch(() => {}); });
       return result;
+    };
+    const createTeamView = number => {
+      const card = node("article", "team-card"); card.dataset.team = String(number);
+      const top = node("div", "card-top"), caption = node("span", "team-number"), badge = node("span", "badge");
+      const heading = node("div", "team-heading"), title = node("h2"), list = node("ul", "members");
+      const empty = node("div", "empty-state"), emptyText = node("p"), emptyHint = node("p", "empty-hint");
+      empty.append(node("span", "empty-symbol", "+"), emptyText, emptyHint);
+      const footer = node("div", "card-footer");
+      // This handler reads the button's current action instead of capturing an old join/leave state.
+      const action = button("join", target => target.dataset.action === "leave" ? this.leave() : this.join(number));
+      footer.append(action);
+      return { card, top, caption, badge, heading, title, list, empty, emptyText, emptyHint, footer, action, seats: [] };
+    };
+    /** A member retains its row and avatar even when moving between team lists. */
+    const renderMember = (member, actor) => {
+      let view = memberViews.get(member.id);
+      if (!view) {
+        const row = node("li", "member"); row.dataset.member = member.id;
+        const avatar = node("span", "avatar"); avatar.setAttribute("aria-hidden", "true");
+        const letters = document.createTextNode(""); avatar.append(letters);
+        view = { row, avatar, letters, name: node("span", "member-name"), you: node("span", "you"), picture: null };
+        memberViews.set(member.id, view);
+      }
+      setProperty(view.name, "textContent", member.name);
+      setProperty(view.letters, "data", initials(member.name));
+      setProperty(view.you, "textContent", String(this.labels.you));
+      if (view.sourcePicture !== member.picture) {
+        view.sourcePicture = member.picture;
+        const picture = pictureURL(member.picture);
+        if (view.picture !== picture) {
+          view.picture = picture;
+          view.image?.remove(); view.image = null;
+          if (picture) {
+            const image = node("img");
+            image.alt = ""; image.loading = "lazy"; image.referrerPolicy = "no-referrer";
+            image.addEventListener("error", () => image.remove(), { once: true });
+            image.src = picture;
+            view.image = image; view.avatar.append(image);
+          }
+        }
+      }
+      // A failed URL keeps its initials fallback until the URL changes; unrelated updates do not reload it.
+      reconcileChildren(view.row, [view.avatar, view.name, ...(member.id === actor?.id ? [view.you] : [])]);
+      return view.row;
+    };
+    const renderTeam = (view, team, actor, own, seenMembers) => {
+      view.team = team;
+      const mine = own === team.number;
+      setProperty(view.card, "className", `team-card${mine ? " mine" : ""}${!team.members.length ? " empty" : ""}`);
+      setProperty(view.caption, "textContent", text("teamNumber", { number: String(team.number).padStart(2, "0") }));
+      setProperty(view.badge, "textContent", String(this.labels.yourTeam));
+      reconcileChildren(view.top, [view.caption, ...(mine ? [view.badge] : [])]);
+      setProperty(view.title, "textContent", team.name);
+      const editable = mine && team.editable;
+      if (editable) {
+        view.edit ??= button("edit", () => openEditor(view.team), "icon-button");
+        updateButton(view.edit, "edit", "icon-button");
+        setAttribute(view.edit, "aria-label", this.labels.edit);
+        setAttribute(view.edit, "title", this.labels.edit);
+        setProperty(view.edit, "disabled", this.gui.busy || this.gui.stale);
+      }
+      reconcileChildren(view.heading, [view.title, ...(editable ? [view.edit] : [])]);
+      const rows = team.members.map(member => {
+        seenMembers.add(member.id);
+        return renderMember(member, actor);
+      });
+      const free = Math.max(0, this.maxMembers - team.members.length);
+      while (view.seats.length > free) view.seats.pop().row.remove();
+      while (view.seats.length < free) {
+        const row = node("li", "member member-empty"), avatar = node("span", "avatar", "+"), label = node("span", "member-name");
+        avatar.setAttribute("aria-hidden", "true"); row.append(avatar, label);
+        view.seats.push({ row, label });
+      }
+      for (const seat of view.seats) {
+        setProperty(seat.label, "textContent", String(this.labels.emptyMember));
+        rows.push(seat.row);
+      }
+      reconcileChildren(view.list, rows);
+      setProperty(view.emptyText, "textContent", String(this.labels.empty));
+      setProperty(view.emptyHint, "textContent", String(this.labels.emptyHint));
+      reconcileChildren(view.card, [view.top, view.heading, rows.length ? view.list : view.empty, view.footer]);
+
+      const full = this.maxMembers > 0 && team.members.length >= this.maxMembers;
+      const withinLimit = !this.maxTeams || team.number <= this.maxTeams;
+      const canSwitch = !own || (this.allowSwitch && rules(this, own).leavable);
+      const action = mine ? "leave" : own ? "switch" : "join";
+      const label = mine ? this.labels.leave : full ? this.labels.full
+        : !team.joinable || !withinLimit ? this.labels.closed : this.labels[action];
+      updateButton(view.action, action, mine ? "secondary" : "primary", label);
+      setProperty(view.action, "disabled", this.gui.busy || this.gui.stale || (mine
+        ? !team.leavable : !actor || full || !team.joinable || !withinLimit || !canSwitch));
     };
     const render = () => {
       if (!content || destroyed) return;
@@ -572,100 +682,43 @@ export const component = {
       const focusTeam = focused?.closest?.("[data-team]")?.dataset.team;
       const actor = identity();
       const own = actor ? memberTeam(state, actor.id) : null;
-      const teams = teamsFor(state ?? emptyState(this.data.key), this);
+      const teams = visibleTeams(state ?? emptyState(this.data.key), this);
       const total = teams.reduce((sum, team) => sum + team.members.length, 0);
       const teamCount = teams.filter(team => team.members.length).length;
-      totals.replaceChildren(stat(teamCount, this.labels[teamCount === 1 ? "oneTeam" : "teams"]),
-        stat(total, this.labels[total === 1 ? "onePerson" : "people"]));
+      setProperty(teamStat.firstChild, "textContent", String(teamCount));
+      setProperty(teamStat.lastChild, "textContent", String(this.labels[teamCount === 1 ? "oneTeam" : "teams"]));
+      setProperty(peopleStat.firstChild, "textContent", String(total));
+      setProperty(peopleStat.lastChild, "textContent", String(this.labels[total === 1 ? "onePerson" : "people"]));
       const realtime = Boolean(source.url && store.observe);
       const live = realtime && this.gui.connection === "connected" && !this.gui.stale;
       const mode = live ? "live" : !realtime ? "manual" : this.gui.connection === "connecting" ? "connecting" : "disconnected";
-      sync.replaceChildren(node("span", `sync-mode${live ? " live" : ""}`, this.labels[mode]));
+      setProperty(syncMode, "className", `sync-mode${live ? " live" : ""}`);
+      setProperty(syncMode, "textContent", String(this.labels[mode]));
       // Keep a visible label if a custom configuration deliberately removes the refresh icon.
       const iconOnly = live && String(this.icons.refresh ?? "").trim();
-      const refresh = button("refresh", () => this.refresh({ reconnect: true }), `secondary${iconOnly ? " icon-button" : ""}`);
-      refresh.setAttribute("aria-label", this.labels.refresh);
-      refresh.title = this.labels.refresh;
-      sync.append(refresh);
-      grid.replaceChildren();
+      updateButton(refreshButton, "refresh", `secondary${iconOnly ? " icon-button" : ""}`);
+      setAttribute(refreshButton, "aria-label", this.labels.refresh);
+      setAttribute(refreshButton, "title", this.labels.refresh);
+      setProperty(refreshButton, "disabled", this.gui.busy);
+      const cards = [], seenMembers = new Set(), seenTeams = new Set();
       for (const team of teams) {
-        const mine = own === team.number;
-        const card = node("article", `team-card${mine ? " mine" : ""}${!team.members.length ? " empty" : ""}`);
-        card.dataset.team = String(team.number);
-        const top = node("div", "card-top");
-        top.append(node("span", "team-number", text("teamNumber", { number: String(team.number).padStart(2, "0") })));
-        if (mine) top.append(node("span", "badge", this.labels.yourTeam));
-        card.append(top);
-        const heading = node("div", "team-heading");
-        heading.append(node("h2", "", team.name));
-        if (mine && team.editable) {
-          const edit = button("edit", target => openEditor(team, target), "icon-button");
-          edit.setAttribute("aria-label", this.labels.edit);
-          edit.title = this.labels.edit;
-          heading.append(edit);
-        }
-        card.append(heading);
-        const list = node("ul", "members");
-        for (const member of team.members) {
-          const row = node("li", "member");
-          const avatar = node("span", "avatar", initials(member.name));
-          avatar.setAttribute("aria-hidden", "true");
-          const picture = pictureURL(member.picture);
-          if (picture) {
-            const image = node("img");
-            image.alt = "";
-            image.loading = "lazy";
-            image.referrerPolicy = "no-referrer";
-            image.addEventListener("error", () => image.remove(), { once: true });
-            image.src = picture;
-            avatar.append(image);
-          }
-          row.append(avatar, node("span", "member-name", member.name));
-          if (member.id === actor?.id) row.append(node("span", "you", this.labels.you));
-          list.append(row);
-        }
-        // Empty seats are presentation only; counters and saved members contain real people.
-        for (let seat = team.members.length; seat < this.maxMembers; seat++) {
-          const row = node("li", "member member-empty");
-          const avatar = node("span", "avatar", "+");
-          avatar.setAttribute("aria-hidden", "true");
-          row.append(avatar, node("span", "member-name", this.labels.emptyMember));
-          list.append(row);
-        }
-        if (list.childElementCount) card.append(list);
-        else {
-          const empty = node("div", "empty-state");
-          empty.append(node("span", "empty-symbol", "+"), node("p", "", this.labels.empty),
-            node("p", "empty-hint", this.labels.emptyHint));
-          card.append(empty);
-        }
-        const footer = node("div", "card-footer");
-        const full = this.maxMembers > 0 && team.members.length >= this.maxMembers;
-        const withinLimit = !this.maxTeams || team.number <= this.maxTeams;
-        const canSwitch = !own || (this.allowSwitch && rules(this, own).leavable);
-        if (mine) {
-          const leave = button("leave", () => this.leave(), "secondary");
-          leave.disabled = !team.leavable; footer.append(leave);
-        } else {
-          const join = button(own ? "switch" : "join", () => this.join(team.number), "primary",
-            full ? this.labels.full : !team.joinable || !withinLimit ? this.labels.closed : this.labels[own ? "switch" : "join"]);
-          join.disabled = !actor || full || !team.joinable || !withinLimit || !canSwitch;
-          footer.append(join);
-        }
-        card.append(footer);
-        grid.append(card);
+        let view = teamViews.get(team.number);
+        if (!view) { view = createTeamView(team.number); teamViews.set(team.number, view); }
+        renderTeam(view, team, actor, own, seenMembers);
+        cards.push(view.card); seenTeams.add(team.number);
       }
-      content.setAttribute("aria-busy", String(this.gui.busy));
-      for (const control of [...sync.querySelectorAll("button"), ...grid.querySelectorAll("button")])
-        if (this.gui.busy || (this.gui.stale && control.dataset.action !== "refresh")) control.disabled = true;
-      for (const control of dialog.querySelectorAll("input, button")) control.disabled = this.gui.busy;
-      if (focusAction && !dialog.open) {
+      reconcileChildren(grid, cards);
+      for (const [number] of teamViews) if (!seenTeams.has(number)) teamViews.delete(number);
+      for (const [id, view] of memberViews) if (!seenMembers.has(id)) { view.row.remove(); memberViews.delete(id); }
+      setAttribute(content, "aria-busy", String(this.gui.busy));
+      for (const control of dialog.querySelectorAll("input, button")) setProperty(control, "disabled", this.gui.busy);
+      if (focusAction && !dialog.open && this.element.getRootNode().activeElement !== focused) {
         const root = focusTeam ? content.querySelector(`[data-team="${focusTeam}"]`) : content;
-        const target = root?.querySelector(`[data-action="${focusAction}"]`);
+        const target = focused.isConnected ? focused : root?.querySelector(`[data-action="${focusAction}"]`);
         if (target && !target.disabled) target.focus({ preventScroll: true });
       }
     };
-    const openEditor = (team, target) => {
+    const openEditor = team => {
       trigger = { number: team.number, action: "edit" };
       draft = { number: team.number, expectedName: team.name };
       const form = node("form");
@@ -705,6 +758,7 @@ export const component = {
       unsubscribe?.(); userListeners?.delete?.(userListener);
       if (store?.parent === this && !observers.has(store)) store.close?.();
       try { await active; } catch { /* Original caller receives the save error. */ }
+      teamViews.clear(); memberViews.clear();
       closeEditor(); this.element.replaceChildren();
     };
   },
@@ -724,12 +778,16 @@ function rules(config, number) {
   return Object.fromEntries(["editable", "joinable", "leavable"].map(key => [key, override[key] ?? config[key]]));
 }
 export function teamsFor(state, config) {
+  return structuredClone(visibleTeams(state, config));
+}
+/** Internal view descriptors borrow member arrays; public callers receive detached copies via teamsFor(). */
+function visibleTeams(state, config) {
   const last = state.teams.findLastIndex(team => team.members.length > 0);
   // Reuse empty trailing places, retain occupied teams beyond a subsequently reduced limit.
   const count = Math.max(last + 1, Math.min(last + 2, config.maxTeams || Infinity));
   return Array.from({ length: count }, (_, index) => ({
     number: index + 1, name: teamName(state.teams[index], index + 1, config),
-    members: structuredClone(state.teams[index]?.members ?? []), ...rules(config, index + 1),
+    members: state.teams[index]?.members ?? [], ...rules(config, index + 1),
   }));
 }
 export function applyAction(state, command, actor, config) {
@@ -797,6 +855,24 @@ function node(tag, className = "", text) {
   if (className) result.className = className;
   if (text !== undefined) result.textContent = text;
   return result;
+}
+/** Avoid even no-op DOM writes so equal snapshots leave existing nodes, images and focus untouched. */
+function setProperty(element, property, value) {
+  if (element[property] !== value) element[property] = value;
+}
+function setAttribute(element, name, value) {
+  value = String(value);
+  if (element.getAttribute(name) !== value) element.setAttribute(name, value);
+}
+/** Remove obsolete children first, then insert or move only nodes that are actually out of order. */
+function reconcileChildren(parent, children) {
+  const wanted = new Set(children);
+  for (const child of [...parent.childNodes]) if (!wanted.has(child)) child.remove();
+  let cursor = parent.firstChild;
+  for (const child of children) {
+    if (child === cursor) cursor = cursor.nextSibling;
+    else parent.insertBefore(child, cursor);
+  }
 }
 function stat(count, label) {
   const result = node("span", "stat"); result.append(node("strong", "", count), node("span", "", label)); return result;

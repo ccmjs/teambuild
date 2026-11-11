@@ -233,6 +233,14 @@ deletion notifications can contain the old dataset. Read responses that predate
 a local mutation are discarded. The login area and an open team-name draft remain
 mounted during updates.
 
+Rendering reuses team cards by their stable team number and member rows by their
+`realm:key` identity, including when a member switches teams. Only changed text,
+icons, images, button states and list positions are updated. When data and UI state
+are unchanged, refreshes leave the DOM untouched. Unchanged avatar URLs are not
+reassigned. Empty seats, team slots and member rows are inserted or removed as needed. Counters and
+connection controls are updated independently; every refresh still reads the
+complete dataset from the datastore before reconciling the view.
+
 Safe writes use an **atomic comparison condition**:
 
 ```js
