@@ -1,6 +1,11 @@
 /**
  * Collaborative team formation with conditional writes and optional live updates.
  *
+ * File guide: config describes the public options; Instance owns lifecycle, reads,
+ * writes and DOM views. The exported domain helpers below it apply rules without I/O.
+ * Local locking and shared datastore subscriptions are handled at the end of the file.
+ * A notification requests a full read; only the resulting DOM changes are incremental.
+ *
  * @author André Kless <andre.kless@web.de>
  * @copyright 2026 André Kless
  * @license MIT
@@ -253,17 +258,27 @@ export const component = {
     // onerror: async ({ app, error }) => {},
   },
   Instance: function () {
+    // state is the latest accepted datastore snapshot; null means no dataset exists yet.
+    // store is the resolved CCM accessor; source is its connection/storage configuration.
     let state = null, store, source, shell, content, status, dialog, unsubscribe;
     let totals, sync, grid, teamStat, peopleStat, syncMode, refreshButton;
+    // Retain cards by 1-based team number and rows by realm:key, even across team switches.
+    // Button metadata follows the element's lifetime; render() removes obsolete card/row entries.
     const teamViews = new Map(), memberViews = new Map(), buttonViews = new WeakMap();
+    // readVersion invalidates stale responses within this instance; it is not the saved revision.
+    // refreshing/active track the current read/write promises; refreshPending coalesces later reads.
     let destroyed = false, initialized = false, readVersion = 0, refreshing, active;
+    // The editor owns its input value; draft stores conflict context and trigger restores focus.
     let refreshTimer, debounceTimer, refreshPending = false, draft = null, trigger = null;
     let userListeners, userListener;
     const life = new AbortController();
+
+    /** Public diagnostics: local action in progress, untrusted snapshot, and observation state. Read only. */
     this.gui = { busy: false, stale: false, connection: "disconnected" };
 
+    /** CCM init: normalize partial options and capture dependencies after CCM has resolved them. */
     this.init = async () => {
-      // CCM replaces nested configuration objects; accept partial text/icon/theme overrides.
+      // CCM replaces nested configuration objects; restore omitted labels, icons and data defaults.
       this.labels = { ...component.config.labels, ...this.labels };
       this.icons = { ...component.config.icons, ...this.icons };
       this.data = { key: component.config.data.key,
@@ -275,6 +290,7 @@ export const component = {
       source = store.source();
     };
 
+    /** CCM ready: attach listeners once; start() may then be called repeatedly. */
     this.ready = async () => {
       this.gui.connection = store.getConnectionState?.() ?? "disconnected";
       unsubscribe = observeStore(store, scheduleRefresh, error => {
@@ -320,7 +336,14 @@ export const component = {
       return this.refresh();
     };
 
-    /** Authoritative reads are serialized; late responses cannot roll back a completed mutation. */
+    /**
+     * Reload the full dataset and reconcile its view. Overlapping reads are coalesced;
+     * a write invalidates older read responses so they cannot restore an outdated membership.
+     * @param {Object} [options]
+     * @param {boolean} [options.silent=false] Suppress the normal success announcement, but not errors/recovery.
+     * @param {boolean} [options.reconnect=false] Replace an interrupted or incomplete remote subscription.
+     * @returns {Promise<void>} During a write, queues a later read and resolves without waiting for it.
+     */
     this.refresh = async ({ silent = false, reconnect = false } = {}) => {
       if (destroyed) return;
       // CCM reconnects once automatically; a later reconciliation can re-establish observation.
@@ -358,14 +381,30 @@ export const component = {
       return refreshing;
     };
 
-    /** Detached, complete dataset for embedding applications; never exposes tokens. */
+    /** @returns {Formation} Detached dataset, or an unsaved empty formation before the first join. */
     this.getValue = () => structuredClone(state ?? emptyState(this.data.key));
-    /** Public team numbers are 1-based, like their visible labels. */
+
+    /** @returns {Object[]} Detached visible teams with 1-based number, name, members and effective rule flags. */
     this.getTeams = () => teamsFor(state ?? emptyState(this.data.key), this);
+
+    /**
+     * @param {number} number 1-based target team; also performs an atomic switch.
+     * @returns {Promise<void>} Rejects if authentication, current rules or available seats prevent the action.
+     */
     this.join = number => mutate({ type: "join", number });
+
+    /** @returns {Promise<void>} Resolves after leaving, or without writing if already outside all teams. */
     this.leave = () => mutate({ type: "leave" });
+
+    /**
+     * @param {number} number 1-based team number; must be the actor's own team.
+     * @param {string} name New name, trimmed and checked against nameMaxLength.
+     * @param {string} [expectedName] Name seen when editing began; defaults to the currently displayed name.
+     * @returns {Promise<void>} Rejects conflicting edits unless the requested name is already stored.
+     */
     this.rename = (number, name, expectedName) => mutate({ type: "rename", number, name, expectedName });
 
+    /** @returns {Member|null} Public display metadata only; never the User component's session/token object. */
     const identity = () => {
       if (!this.user?.isLoggedIn()) return null;
       const user = this.user.getState();
@@ -375,6 +414,7 @@ export const component = {
       return { id: `${user.realm}:${user.key}`, name: String(user.user || user.key),
         ...(picture ? { picture } : {}) };
     };
+
     /** Private CCM uploads need a reusable thumbnail, not the user component's tab-local blob URL. */
     const loadPrivatePicture = async actor => {
       if (actor.picture) return;
@@ -408,24 +448,32 @@ export const component = {
         report(error);
       }
     };
+
     const text = (key, values = {}) => format(this.labels[key], values);
+
     const message = (error, fallback) => text(error.code && this.labels[error.code] ? error.code : fallback,
       { max: this.nameMaxLength });
+
     const report = error => {
       // Extension failures cannot turn an already committed action into a failed save.
       try { Promise.resolve(this.onerror?.({ app: this, error })).catch(console.error); }
       catch (failure) { console.error(failure); }
     };
+
     const emit = type => {
       try { Promise.resolve(this.onchange?.({ app: this, type, value: this.getValue() })).catch(report); }
       catch (error) { report(error); }
     };
+
+    // Treat notifications as invalidations, not replacement snapshots (deletions can carry old data).
+    // Debounce bursts for 40 ms; the next full read includes all changes committed before that read.
     function scheduleRefresh() {
       if (destroyed || !initialized) return;
       clearTimeout(debounceTimer);
       debounceTimer = setTimeout(() => thisRefresh(), 40);
     }
     const thisRefresh = () => this.refresh({ silent: true }).catch(() => {});
+    // A notification received during a read/write must still cause a subsequent authoritative read.
     const drainRefresh = () => {
       if (refreshPending && !destroyed && !this.gui.busy && !refreshing) {
         refreshPending = false;
@@ -433,19 +481,26 @@ export const component = {
       }
     };
 
+    /**
+     * Execute one user intent: capture its original context, read, validate, conditionally write.
+     * HTTP 409 retries reapply the intent, while domain conflicts require the user to reconsider it.
+     * Local stores use a shared lock instead of the server's atomic ifMatch check.
+     */
     const mutate = async command => {
       if (destroyed) throw new Error("Instance has been destroyed.");
       if (this.gui.busy) throw issue("conflict");
       const actor = identity();
       if (!actor) throw issue("loginRequired");
+      // Keep these preconditions fixed across retries: another tab must not silently change the intent.
       command.from = memberTeam(state, actor.id);
       if (command.type === "rename" && command.expectedName === undefined)
         command.expectedName = teamName(state?.teams[command.number - 1], command.number, this);
-      const mutation = crypto.randomUUID();
+      const mutation = crypto.randomUUID(); // One ID per action, shared by all conditional-write attempts.
       this.gui.busy = true;
       ++readVersion;
       render();
       announce(this.labels.saving);
+
       const work = async () => {
         for (let attempt = 0; attempt < this.retryLimit; attempt++) {
           const before = await store.get(this.data.key);
@@ -458,6 +513,7 @@ export const component = {
             next._ = { ...structuredClone(this.data.permissions), owner: actor.id };
           next.mutation = mutation;
           try {
+            // Compare the entire snapshot, including permissions; null allows only first-time creation.
             const saved = await store.set(next, undefined, source.url ? { ifMatch: before } : undefined);
             validateState(saved, this.data.key);
             if (saved?.mutation !== mutation) throw issue("saveFailed");
@@ -472,6 +528,7 @@ export const component = {
             if (source.url && error.status === 400) throw issue("unsupported");
             // A lost HTTP response can follow a successful commit. Confirm by mutation ID,
             // otherwise stop and let the user inspect the current state, without blind retries.
+            // If a later write replaced our ID, this read cannot prove whether our write succeeded.
             try {
               const latest = await store.get(this.data.key);
               validateState(latest, this.data.key);
@@ -484,10 +541,12 @@ export const component = {
         }
         throw issue("conflict");
       };
+
       active = (async () => {
         if (command.type === "join") await loadPrivatePicture(actor);
         return source.url ? work() : localTransaction(store, source, this.data.key, work);
       })();
+
       try {
         await active;
         this.gui.stale = false;
@@ -518,6 +577,7 @@ export const component = {
       }
     };
 
+    /** Create the persistent shell once. Refreshes patch cards without remounting authentication or dialogs. */
     const mount = () => {
       shell = node("section", "teambuild");
       for (const [key, value] of Object.entries(this.theme))
@@ -554,11 +614,13 @@ export const component = {
       this.element.replaceChildren(shell);
       render();
     };
+
     const announce = (value, error = false) => {
       if (!status || destroyed) return;
       setProperty(status, "textContent", String(value));
       if (status.classList.contains("error") !== error) status.classList.toggle("error", error);
     };
+
     /** Patch a retained button, including its current action; never replace unchanged SVGs or labels. */
     const updateButton = (result, action, className = "", label = this.labels[action]) => {
       const view = buttonViews.get(result);
@@ -566,12 +628,14 @@ export const component = {
       setAttribute(result, "data-action", action);
       const markup = String(this.icons[action] ?? "");
       if (view.markup !== markup) {
+        // Only trusted configuration icons use HTML; team/member names always use textContent.
         if (markup.trim().startsWith("<svg")) view.icon.innerHTML = markup;
         else view.icon.textContent = markup;
         view.markup = markup;
       }
       setProperty(view.label, "textContent", String(label ?? ""));
     };
+
     const button = (action, handler, className = "", label = this.labels[action]) => {
       const result = node("button");
       result.type = "button";
@@ -584,6 +648,8 @@ export const component = {
       result.addEventListener("click", () => { Promise.resolve().then(() => handler(result)).catch(() => {}); });
       return result;
     };
+
+    /** Create a card's DOM references; renderTeam supplies its current content and effective rules. */
     const createTeamView = number => {
       const card = node("article", "team-card"); card.dataset.team = String(number);
       const top = node("div", "card-top"), caption = node("span", "team-number"), badge = node("span", "badge");
@@ -596,6 +662,7 @@ export const component = {
       footer.append(action);
       return { card, top, caption, badge, heading, title, list, empty, emptyText, emptyHint, footer, action, seats: [] };
     };
+
     /** A member retains its row and avatar even when moving between team lists. */
     const renderMember = (member, actor) => {
       let view = memberViews.get(member.id);
@@ -628,6 +695,8 @@ export const component = {
       reconcileChildren(view.row, [view.avatar, view.name, ...(member.id === actor?.id ? [view.you] : [])]);
       return view.row;
     };
+
+    /** Patch one card. team is a derived view descriptor; neither it nor the saved members are mutated here. */
     const renderTeam = (view, team, actor, own, seenMembers) => {
       view.team = team;
       const mine = own === team.number;
@@ -649,6 +718,7 @@ export const component = {
         seenMembers.add(member.id);
         return renderMember(member, actor);
       });
+      // Empty seats exist only in the view; maxMembers = 0 creates no placeholders.
       const free = Math.max(0, this.maxMembers - team.members.length);
       while (view.seats.length > free) view.seats.pop().row.remove();
       while (view.seats.length < free) {
@@ -675,6 +745,8 @@ export const component = {
       setProperty(view.action, "disabled", this.gui.busy || this.gui.stale || (mine
         ? !team.leavable : !actor || full || !team.joinable || !withinLimit || !canSwitch));
     };
+
+    /** Scan all visible teams, patch differing DOM values and release views no longer present. No datastore I/O. */
     const render = () => {
       if (!content || destroyed) return;
       const focused = this.element.getRootNode().activeElement;
@@ -709,6 +781,7 @@ export const component = {
       }
       reconcileChildren(grid, cards);
       for (const [number] of teamViews) if (!seenTeams.has(number)) teamViews.delete(number);
+      // Clean up after all cards were processed: a row removed from one team may have moved to another.
       for (const [id, view] of memberViews) if (!seenMembers.has(id)) { view.row.remove(); memberViews.delete(id); }
       setAttribute(content, "aria-busy", String(this.gui.busy));
       for (const control of dialog.querySelectorAll("input, button")) setProperty(control, "disabled", this.gui.busy);
@@ -718,6 +791,8 @@ export const component = {
         if (target && !target.disabled) target.focus({ preventScroll: true });
       }
     };
+
+    /** Capture the displayed name for conflict detection; incoming updates leave the input value untouched. */
     const openEditor = team => {
       trigger = { number: team.number, action: "edit" };
       draft = { number: team.number, expectedName: team.name };
@@ -751,7 +826,10 @@ export const component = {
       if (dialog?.open) dialog.close();
     };
 
-    /** Detach only listeners owned by this instance, keeping shared datastore accessors usable. */
+    /**
+     * Detach owned listeners/timers and release views, keeping externally shared accessors usable.
+     * Wait for an active action; an HTTP write already sent to the server cannot be undone here.
+     */
     this.destroy = async () => {
       destroyed = true; ++readVersion;
       life.abort(); clearInterval(refreshTimer); clearTimeout(debounceTimer);
@@ -764,19 +842,50 @@ export const component = {
   },
 };
 
-/** Pure domain operations, also available to custom editors and embedding applications. */
+/**
+ * Public data shapes. Member metadata is a snapshot taken when joining or switching.
+ * @typedef {Object} Member
+ * @property {string} id Account identity as realm:key; unique across the whole formation.
+ * @property {string} name Display name, independent of the stable identity.
+ * @property {string} [picture] Reusable HTTP(S) URL or raster image data URL.
+ */
+
+/**
+ * @typedef {Object} Team
+ * @property {string|null} name Stored name; null uses the configured name or numbered fallback.
+ * @property {Member[]} members Real members only; empty seat placeholders are never stored.
+ */
+
+/**
+ * @typedef {Object} Formation
+ * @property {string|string[]} key CCM dataset key.
+ * @property {number} schema Supported format version: 1.
+ * @property {number} revision Number of changes applied by this component; not the comparison condition.
+ * @property {Team[]} teams Array position defines the stable team number; empty entries are retained.
+ * @property {string} [mutation] ID of the last action written through mutate().
+ * @property {Object} [_] CCM ownership and access metadata, preserved on subsequent writes.
+ */
+
+// Pure domain operations: no DOM, datastore, authentication or locking. Callers supply validated data
+// and a complete configuration (defaults plus overrides), as prepared by the component's init().
+
+/** @returns {Formation} Unsaved empty formation; creating this object does not create a datastore entry. */
 export function emptyState(key) { return { key, schema: 1, revision: 0, teams: [] }; }
+/** Resolve a 1-based team's display name: stored value, configured preset, then numbered label. */
 export function teamName(team, number, config) {
   return team?.name ?? config.teamNames[number - 1] ?? format(config.labels.team, { number });
 }
+/** @returns {number|null} 1-based membership position, or null for an absent user/dataset. */
 export function memberTeam(state, id) {
   const index = state?.teams.findIndex(team => team.members.some(member => member.id === id)) ?? -1;
   return index < 0 ? null : index + 1;
 }
+/** Explicit per-team false is an override too; omitted flags inherit the global rule. */
 function rules(config, number) {
   const override = config.teamOverrides[number - 1] ?? {};
   return Object.fromEntries(["editable", "joinable", "leavable"].map(key => [key, override[key] ?? config[key]]));
 }
+/** Return detached visible-team descriptors: number, resolved name, members and the three effective rules. */
 export function teamsFor(state, config) {
   return structuredClone(visibleTeams(state, config));
 }
@@ -790,6 +899,20 @@ function visibleTeams(state, config) {
     members: state.teams[index]?.members ?? [], ...rules(config, index + 1),
   }));
 }
+/**
+ * Apply one intent to a fresh snapshot without modifying the inputs. Transport retries belong in mutate().
+ * @param {Formation} state Validated dataset, or emptyState(key) if it does not exist yet.
+ * @param {Object} command Original user intent, including its preconditions before any retry.
+ * @param {"join"|"leave"|"rename"} command.type Action; a join also covers a direct team switch.
+ * @param {number|null} command.from Membership when the action began; rejects conflicting moves in another tab.
+ * @param {number} [command.number] 1-based target for joining or renaming.
+ * @param {string} [command.name] Proposed name for a rename.
+ * @param {string} [command.expectedName] Display name when editing began; required for a changed name.
+ * @param {Member} actor Authenticated actor's public display metadata, prepared by the caller.
+ * @param {Object} config Complete component options, including defaults.
+ * @returns {Formation|null} New snapshot with revision incremented once, or null if already satisfied.
+ * @throws {Error} Domain failures carry a code matching a configurable label; no data is written here.
+ */
 export function applyAction(state, command, actor, config) {
   const next = structuredClone(state);
   const own = memberTeam(state, actor.id);
@@ -819,6 +942,8 @@ export function applyAction(state, command, actor, config) {
   next.revision++;
   return next;
 }
+
+/** Accept null or the supported schema with the expected key and unique identities; reject without repairing data. */
 export function validateState(value, key) {
   if (value === null) return;
   if (!value || JSON.stringify(value.key) !== JSON.stringify(key) || value.schema !== 1 ||
@@ -834,6 +959,8 @@ export function validateState(value, key) {
     }
   }
 }
+
+/** Fail early for invalid limits/rules, before attaching listeners or allowing mutations. */
 function checkConfig(config) {
   for (const key of ["maxMembers", "maxTeams", "refreshInterval"])
     if (!Number.isSafeInteger(config[key]) || config[key] < 0) throw new Error(`${key} must be a non-negative integer.`);
@@ -846,25 +973,35 @@ function checkConfig(config) {
     for (const key of ["editable", "joinable", "leavable"])
       if (settings[key] !== undefined && typeof settings[key] !== "boolean") throw new Error(`${key} must be boolean.`);
 }
+
+/** Stable machine-readable codes are translated through labels when displayed and passed intact to onerror. */
 function issue(code) { return Object.assign(new Error(code), { code }); }
 function format(value, values) {
   return String(value).replace(/\{(\w+)\}/g, (match, key) => values[key] ?? match);
 }
+
 function node(tag, className = "", text) {
   const result = document.createElement(tag);
   if (className) result.className = className;
   if (text !== undefined) result.textContent = text;
   return result;
 }
+
 /** Avoid even no-op DOM writes so equal snapshots leave existing nodes, images and focus untouched. */
 function setProperty(element, property, value) {
   if (element[property] !== value) element[property] = value;
 }
+
 function setAttribute(element, name, value) {
   value = String(value);
   if (element.getAttribute(name) !== value) element.setAttribute(name, value);
 }
-/** Remove obsolete children first, then insert or move only nodes that are actually out of order. */
+
+/**
+ * Match an ordered list of existing node references; callers provide each node at most once.
+ * Remove obsolete children first to avoid needlessly moving retained nodes past disappearing ones.
+ * insertBefore also moves a retained member row from its previous team without recreating it.
+ */
 function reconcileChildren(parent, children) {
   const wanted = new Set(children);
   for (const child of [...parent.childNodes]) if (!wanted.has(child)) child.remove();
@@ -874,9 +1011,11 @@ function reconcileChildren(parent, children) {
     else parent.insertBefore(child, cursor);
   }
 }
+
 function stat(count, label) {
   const result = node("span", "stat"); result.append(node("strong", "", count), node("span", "", label)); return result;
 }
+
 function initials(name) { return name.trim().split(/\s+/).slice(0, 2).map(part => [...part][0] ?? "").join("").toUpperCase(); }
 
 /** Only reusable web URLs and raster data URLs belong in shared member records, never tab-local blob URLs. */
@@ -891,6 +1030,8 @@ function pictureURL(value) {
 
 /** Share local serialization and observation across instances of this component module. */
 const localQueues = new WeakMap();
+
+/** Named stores share an origin-wide Web Lock; unnamed in-memory stores queue writes per accessor object. */
 async function localTransaction(store, source, key, operation) {
   if (source.name) {
     if (!globalThis.navigator?.locks) throw issue("localLock");
@@ -898,12 +1039,15 @@ async function localTransaction(store, source, key, operation) {
   }
   const previous = localQueues.get(store) ?? Promise.resolve();
   const result = previous.then(operation);
-  const pending = result.catch(() => {});
+  const pending = result.catch(() => {}); // A failed action must not block the next; its caller still receives result's rejection.
   localQueues.set(store, pending);
   try { return await result; }
   finally { if (localQueues.get(store) === pending) localQueues.delete(store); }
 }
+
 const observers = new WeakMap();
+
+/** Multiplex CCM's single callback slots for shared accessors; return cleanup for just this instance. */
 function observeStore(store, changed, failed, connectionChanged) {
   let entry = observers.get(store);
   if (!entry) {
@@ -913,6 +1057,7 @@ function observeStore(store, changed, failed, connectionChanged) {
     entry = { listeners: new Set(), previous, previousError, previousConnection };
     entry.change = async value => {
       for (const listener of entry.listeners) listener.changed(value);
+      // Replace CCM's automatic parent.start callback with our debounced read; preserve custom callbacks.
       if (previous && previous !== store.parent?.start) await previous(value);
     };
     entry.error = async error => {
@@ -930,12 +1075,15 @@ function observeStore(store, changed, failed, connectionChanged) {
   return () => {
     entry.listeners.delete(listener);
     if (entry.listeners.size) return;
+    // Restore only slots still owned by this wrapper; an embedding app may have replaced a callback.
     if (store.onchange === entry.change) store.onchange = entry.previous;
     if (store.onerror === entry.error) store.onerror = entry.previousError;
     if (store.onconnectionchange === entry.connection) store.onconnectionchange = entry.previousConnection;
     observers.delete(store);
   };
 }
+
+/** Notify sibling instances sharing this local accessor; remote notifications come from the server. */
 function notifyLocal(store) {
   if (store.source().url) return;
   for (const listener of observers.get(store)?.listeners ?? []) listener.changed();

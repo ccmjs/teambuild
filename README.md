@@ -48,6 +48,9 @@ leave and rename their own team.
 `resources/configs.mjs` also provides `realtime`, `manual` and `frozen`
 configurations for the local CCM server. Load them with a dependency such as
 `["ccm.load", "./resources/configs.mjs#realtime"]`.
+These three variants share the `seminar` dataset; the demo uses its separate `demo`
+dataset. Keep the observation key equal to `data.key` and point authentication and
+data access at the same backend.
 
 When `user` is configured, the User component renders its own sign-in button and,
 after authentication, profile and sign-out controls at the top right of the toolbar.
@@ -228,18 +231,21 @@ Window focus and network recovery also trigger reconciliation. In realtime mode,
 `refreshInterval` supplements notifications with periodic reads so that changes
 missed during an interruption can be recovered.
 
-Each notification triggers a fresh dataset read. This is necessary because CCM
-deletion notifications can contain the old dataset. Read responses that predate
-a local mutation are discarded. The login area and an open team-name draft remain
-mounted during updates.
+Notifications schedule a fresh dataset read; bursts are combined with a 40 ms
+debounce. Their payloads are not used as replacement state because CCM deletion
+notifications can contain the old dataset. Read responses that predate a local
+mutation are discarded. A notification arriving during a read or write schedules
+a subsequent read. The login area and an open team-name draft remain mounted during
+updates.
 
 Rendering reuses team cards by their stable team number and member rows by their
 `realm:key` identity, including when a member switches teams. Only changed text,
 icons, images, button states and list positions are updated. When data and UI state
 are unchanged, refreshes leave the DOM untouched. Unchanged avatar URLs are not
-reassigned. Empty seats, team slots and member rows are inserted or removed as needed. Counters and
-connection controls are updated independently; every refresh still reads the
-complete dataset from the datastore before reconciling the view.
+reassigned. Empty seats, team slots and member rows are inserted or removed as
+needed. Counters and connection controls are updated independently. Reconciliation
+still scans all visible teams and members, including their current UI rules; it
+updates only changed DOM values while preserving the full dataset read.
 
 Safe writes use an **atomic comparison condition**:
 
@@ -262,6 +268,14 @@ last seat has already been taken, it displays the corresponding message.
 Conflicting edits to the same team name are reported explicitly; the local draft
 is preserved so the user can review and retry deliberately.
 
+The actor's original team and the name seen when editing began remain fixed across
+automatic retries. An HTTP 409 may be retried; `membershipConflict`, `nameConflict`
+or `teamFull` require the user to review the new state. If a write's response is
+lost, the component looks for its action ID in `mutation`. A later action may
+already have replaced that ID, so an unmatched ID cannot confirm success or failure.
+The component reports the uncertainty, marks the view stale and disables UI actions
+until a successful read. It does not automatically resend that uncertain write.
+
 Comparison and saving are serialized together. This guarantee applies to the CCM
 backend's supported operation with **one server process per database**, with all
 writes passing through that server. Multiple server processes or direct database
@@ -280,16 +294,71 @@ the same lock. Use the CCM server for collaboration between remote clients.
 | --- | --- |
 | `start()` | Mount the UI or reload the current state |
 | `refresh()` | Reload the dataset |
+| `refresh({ silent: true })` | Reload without the normal success announcement; errors and recovery remain visible |
 | `refresh({ reconnect: true })` | Also rebuild an interrupted or stalled live connection |
 | `getValue()` | Return a detached copy of the current dataset |
 | `getTeams()` | Return visible teams, including the empty slot and their effective rules |
 | `join(1)` | Join team 1 or switch to it |
 | `leave()` | Leave the current team |
 | `rename(1, "New name")` | Rename the user's own team |
+| `rename(1, "New name", "Original name")` | Also require the name seen when editing began; useful for an external form |
 | `destroy()` | Remove owned timers and listeners and unmount the UI |
 
 Mutation methods are asynchronous, enforce the same rules as the UI and reject
-on errors. `onchange({ app, type, value })` receives `join` (including switches),
-`leave` or `rename`; `onerror({ app, error })` receives errors. Returned datasets
-and team lists are detached copies. An externally supplied, shared datastore
-remains owned by the embedding application.
+on errors; they resolve without returning a dataset. Use `getValue()` after an
+action to inspect its local snapshot. `onchange({ app, type, value })` receives
+`join` (including switches), `leave` or `rename`; incoming notifications do not
+invoke it. `onerror({ app, error })` receives errors. Returned datasets and team
+lists are detached copies. An externally supplied, shared datastore remains owned
+by the embedding application.
+
+An already satisfied action does not write: joining the current team, leaving when
+already outside all teams, or saving the current name resolves without a revision
+increment. Domain conflicts reject with `error.code`; HTTP failures may carry
+`error.status`.
+
+Calling `refresh()` during a local action queues a later read; that call resolves
+without waiting for the queued read. Overlapping refreshes share the active read
+and request a subsequent one. `gui` exposes diagnostics for consumers to read:
+`busy` indicates an active local action, `stale` marks a failed read or uncertain
+write, and `connection` is `disconnected`, `connecting` or `connected`. A successful
+HTTP read alone does not imply a working live subscription.
+
+## Developer guide
+
+Start with [ccm.teambuild.mjs](ccm.teambuild.mjs). Its `config` documents the public
+options; `Instance` owns the lifecycle and I/O; the functions below it contain the
+domain rules and shared-store utilities. The following entry points explain the
+main flows:
+
+| Responsibility | Entry points and invariant |
+| --- | --- |
+| Lifecycle | `init()` normalizes options; `ready()` attaches listeners; `start()` mounts once and reads; `destroy()` detaches owned resources |
+| Incoming changes | `scheduleRefresh()` → `refresh()` → `render()`; the datastore remains authoritative |
+| User actions | `join()` / `leave()` / `rename()` → `mutate()` → `applyAction()` → conditional write |
+| Domain rules | `teamsFor()`, `memberTeam()`, `teamName()` and `applyAction()` derive team slots and enforce membership rules without I/O |
+| Rendering | `createTeamView()` creates references; `renderTeam()` and `renderMember()` patch them; `reconcileChildren()` retains and orders nodes |
+| Shared access | `localTransaction()` serializes local writes; `observeStore()` distributes callbacks and restores them on cleanup |
+
+`state` holds the latest accepted dataset. The saved `revision` counts changes;
+the instance-local `readVersion` invalidates outdated responses. Keep these
+separate: concurrent writes compare the entire snapshot through `ifMatch`, not
+either counter alone.
+
+Team numbers are stable array positions plus one. Keep empty stored teams so their
+names and identities survive later reuse. Member rows are keyed globally by
+`realm:key`, allowing the same element to move between teams. Remove obsolete
+member views only after processing all teams. Retained event handlers must read
+current action/view state rather than capture outdated permissions or names.
+
+The exported domain helpers require validated input and complete options, including
+defaults. `applyAction()` returns a new dataset with one revision increment, returns
+`null` when the intent is already satisfied, or throws an error with a domain code.
+It does not authenticate, lock or save; embedding applications should normally use
+the instance methods for those responsibilities.
+
+[resources/styles.css](resources/styles.css) groups styles by the toolbar, cards,
+members, buttons and editor. [resources/configs.mjs](resources/configs.mjs) contains
+named configuration examples; [index.html](index.html) loads the demo through CCM.
+The `libs/` directory contains bundled dependencies. Component behavior belongs in
+the component source; presentation defaults belong in the stylesheet and `config`.

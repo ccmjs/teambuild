@@ -1,3 +1,9 @@
+/**
+ * Load a named export with ["ccm.load", "./resources/configs.mjs#demo"].
+ * demo uses its own dataset; realtime, manual and frozen share the seminar dataset.
+ * Use the same backend URL for authentication and data, and match observe.key to data.key.
+ */
+
 /** Persistent shared demo with authentication and WebSocket observation through the local CCM server. */
 export const demo = {
   maxMembers: 4,
@@ -41,7 +47,7 @@ export const manual = {
   },
 };
 
-/** Global freeze with a higher-priority exception for the first team. */
+/** UI freeze with a first-team exception for joining/leaving; renaming stays locked in every team. */
 export const frozen = {
   ...realtime, editable: false, joinable: false, leavable: false,
   teamOverrides: [{ joinable: true, leavable: true }],

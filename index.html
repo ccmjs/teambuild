@@ -7,6 +7,7 @@
   <style>body { margin: 0; padding: clamp(8px, 3vw, 40px); background: #e9ece6; }</style>
   <script src="./libs/framework/ccm-28.0.0.min.js"></script>
   <script type="module">
+    // Load the named demo configuration through CCM; expose the instance for browser-console exploration.
     window.app = await ccm.start("./ccm.teambuild.mjs", ["ccm.load", "./resources/configs.mjs#demo"], document.body);
   </script>
 </head>
