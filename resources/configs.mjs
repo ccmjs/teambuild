@@ -1,24 +1,17 @@
-/** A server-free, read-only preview. Authentication is deliberately optional. */
+/** Persistent shared demo with authentication and WebSocket observation through the local CCM server. */
 export const demo = {
   maxMembers: 4,
   maxTeams: 6,
   teamNames: ["Ideenwerkstatt", "Perspektivwechsel", "Zukunftslabor"],
+  user: ["ccm.instance", "././libs/user/ccm.user-1.0.0.min.mjs", {
+    url: "http://localhost:8080", realm: "ccm", registration: true,
+  }],
   data: {
     key: "demo",
-    store: ["ccm.store", { datasets: [{
-      key: "demo", schema: 1, revision: 0,
-      teams: [
-        { name: null, members: [
-          { id: "demo:lea", name: "Lea Sommer" },
-          { id: "demo:noah", name: "Noah Weber" },
-          { id: "demo:mila", name: "Mila Fischer" },
-        ] },
-        { name: null, members: [
-          { id: "demo:emil", name: "Emil Hoffmann" },
-          { id: "demo:ada", name: "Ada Nguyen" },
-        ] },
-      ],
-    }] }],
+    store: ["ccm.store", {
+      name: "teambuild", url: "http://localhost:8080", observe: { key: "demo" },
+    }],
+    permissions: { access: { get: "all", set: "realm", del: "owner" } },
   },
 };
 

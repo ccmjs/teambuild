@@ -30,11 +30,11 @@ export const component = {
     teamOverrides: [],
     allowSwitch: true,
     nameMaxLength: 60,
+    /** Maximum edge in pixels for the shared thumbnail of a private uploaded profile picture. */
+    avatarSize: 96,
     /** Background reconciliation when observe is enabled, including after a missed WebSocket event. */
     refreshInterval: 30000,
     retryLimit: 12,
-    title: "Gemeinsam geht mehr.",
-    description: "Finde dein Team und gestaltet gemeinsam, was als Nächstes kommt.",
     /** CSS custom properties without the --tb- prefix, e.g. { accent: '#6d28d9' }. */
     theme: {},
     /** Icons may be trusted SVG markup, a text symbol, or an empty string. */
@@ -48,21 +48,16 @@ export const component = {
       cancel: "×",
     },
     labels: {
-      eyebrow: "TEAM FINDEN · ZUSAMMEN STARTEN",
       teams: "Teams", people: "Personen", oneTeam: "Team", onePerson: "Person", team: "Team {number}",
       teamNumber: "TEAM {number}", yourTeam: "Dein Team", you: "Du",
       empty: "Hier ist Platz für eure Ideen.", emptyHint: "Sei die erste Person in diesem Team.",
-      members: "{count} Mitglieder", capacity: "{count} von {max} Plätzen", free: "{count} Plätze frei",
-      oneMember: "1 Mitglied", oneFree: "1 Platz frei",
-      unlimited: "Platz für alle", full: "Team vollständig", closed: "Beitritt geschlossen",
+      emptyMember: "Freier Platz", full: "Team vollständig", closed: "Beitritt geschlossen",
       join: "Beitreten", leave: "Team verlassen", switch: "Hierhin wechseln",
       edit: "Teamname ändern", refresh: "Aktualisieren", save: "Speichern", cancel: "Abbrechen",
       name: "Teamname", editTitle: "Gebt eurem Team einen Namen.",
       editHint: "Alle Mitglieder deines Teams können den Namen ändern.",
-      readOnly: "Du siehst den aktuellen Stand der Teambildung.",
-      signIn: "Melde dich oben an, um einem Team beizutreten.",
-      assigned: "Du bist in {team}.", unassigned: "Dein Platz im Team wartet auf dich.",
       live: "Automatische Updates", manual: "Stand manuell aktualisieren",
+      connecting: "Live-Verbindung wird hergestellt …", disconnected: "Live-Updates unterbrochen",
       loading: "Teams werden geladen …", saving: "Änderung wird gespeichert …",
       refreshed: "Der Stand ist aktuell.", joined: "Du bist jetzt in {team}.",
       left: "Du hast das Team verlassen.", renamed: "Der Teamname wurde gespeichert.",
@@ -84,11 +79,12 @@ export const component = {
   },
   Instance: function () {
     let state = null, store, source, shell, content, status, dialog, unsubscribe;
+    let totals, sync, grid;
     let destroyed = false, initialized = false, readVersion = 0, refreshing, active;
     let refreshTimer, debounceTimer, refreshPending = false, draft = null, trigger = null;
     let userListeners, userListener;
     const life = new AbortController();
-    this.gui = { busy: false, stale: false };
+    this.gui = { busy: false, stale: false, connection: "disconnected" };
 
     this.init = async () => {
       // CCM replaces nested configuration objects; accept partial text/icon/theme overrides.
@@ -104,9 +100,18 @@ export const component = {
     };
 
     this.ready = async () => {
+      this.gui.connection = store.getConnectionState?.() ?? "disconnected";
       unsubscribe = observeStore(store, scheduleRefresh, error => {
+        this.gui.connection = "disconnected";
+        render();
         announce(this.labels.observeFailed, true);
         report(error);
+      }, connection => {
+        if (destroyed) return;
+        this.gui.connection = connection;
+        render();
+        // Read again after subscription acknowledgement to close any gap during reconnection.
+        if (connection === "connected") scheduleRefresh();
       });
       if (this.user?.subscribe) {
         userListener = type => {
@@ -140,10 +145,14 @@ export const component = {
     };
 
     /** Authoritative reads are serialized; late responses cannot roll back a completed mutation. */
-    this.refresh = async ({ silent = false } = {}) => {
+    this.refresh = async ({ silent = false, reconnect = false } = {}) => {
       if (destroyed) return;
       // CCM reconnects once automatically; a later reconciliation can re-establish observation.
-      if (source.url && store.observe) store.connect?.();
+      if (source.url && store.observe) {
+        // An explicit refresh can replace a stalled connection or a rejected subscription.
+        if (reconnect && this.gui.connection !== "connected") store.close?.();
+        store.connect?.();
+      }
       if (this.gui.busy) { refreshPending = true; return; }
       if (refreshing) { refreshPending = true; return refreshing; }
       const version = ++readVersion;
@@ -156,7 +165,8 @@ export const component = {
           state = value;
           this.gui.stale = false;
           render();
-          if (!silent || recovered) announce(this.labels.refreshed);
+          if (!silent || recovered || (this.gui.connection === "connected" && status?.textContent === this.labels.observeFailed))
+            announce(this.labels.refreshed);
         } catch (error) {
           if (destroyed || version !== readVersion) return;
           this.gui.stale = true;
@@ -184,7 +194,43 @@ export const component = {
       if (!this.user?.isLoggedIn()) return null;
       const user = this.user.getState();
       if (!user?.realm || !user.key) return null;
-      return { id: `${user.realm}:${user.key}`, name: String(user.user || user.key) };
+      const picture = pictureURL(user.picture);
+      // Persist only display metadata; authentication tokens never enter the shared dataset.
+      return { id: `${user.realm}:${user.key}`, name: String(user.user || user.key),
+        ...(picture ? { picture } : {}) };
+    };
+    /** Private CCM uploads need a reusable thumbnail, not the user component's tab-local blob URL. */
+    const loadPrivatePicture = async actor => {
+      if (actor.picture) return;
+      const user = this.user.getSessionOwner?.() ?? this.user;
+      if (!user.profilePicture || user.getState()?.provider !== "ccm" || !user.url) return;
+      const token = user.getToken?.();
+      if (!token) return;
+      try {
+        const signal = AbortSignal.timeout(5000);
+        const request = async params => {
+          // Binary downloads are not supported by ccm.load; keep credentials in the POST body.
+          const response = await fetch(user.url, { method: "POST", signal,
+            headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ...params, token }) });
+          if (!response.ok) throw Object.assign(new Error("Profile picture could not be loaded."), { status: response.status });
+          return response;
+        };
+        const account = await (await request({ account: true })).json();
+        if (!account.picture || account.defaultPicture === true) return;
+        const blob = await (await request({ download: account.picture })).blob();
+        const bitmap = await createImageBitmap(blob);
+        try {
+          const scale = Math.min(1, this.avatarSize / Math.max(bitmap.width, bitmap.height));
+          const canvas = document.createElement("canvas");
+          canvas.width = Math.max(1, Math.round(bitmap.width * scale));
+          canvas.height = Math.max(1, Math.round(bitmap.height * scale));
+          canvas.getContext("2d").drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+          actor.picture = canvas.toDataURL("image/webp", 0.85);
+        } finally { bitmap.close(); }
+      } catch (error) {
+        // An unavailable avatar must not prevent joining. The current identity is rechecked before writing.
+        report(error);
+      }
     };
     const text = (key, values = {}) => format(this.labels[key], values);
     const message = (error, fallback) => text(error.code && this.labels[error.code] ? error.code : fallback,
@@ -262,7 +308,10 @@ export const component = {
         }
         throw issue("conflict");
       };
-      active = source.url ? work() : localTransaction(store, source, this.data.key, work);
+      active = (async () => {
+        if (command.type === "join") await loadPrivatePicture(actor);
+        return source.url ? work() : localTransaction(store, source, this.data.key, work);
+      })();
       try {
         await active;
         this.gui.stale = false;
@@ -297,27 +346,30 @@ export const component = {
       shell = node("section", "teambuild");
       for (const [key, value] of Object.entries(this.theme))
         if (/^[a-z][a-z0-9-]*$/.test(key)) shell.style.setProperty(`--tb-${key}`, String(value));
-      const header = node("header", "topbar");
-      header.append(node("span", "eyebrow", this.labels.eyebrow));
+      // Keep the toolbar and authentication host connected while the team list refreshes.
+      const toolbar = node("div", "toolbar");
+      totals = node("div", "totals");
+      sync = node("div", "sync");
+      toolbar.append(totals, sync);
       if (this.user) {
         const userArea = node("div", "user-area");
         userArea.append(this.user.host);
-        header.append(userArea);
+        toolbar.append(userArea);
       }
-      const intro = node("div", "intro");
-      intro.append(node("h1", "", this.title), node("p", "description", this.description));
       status = node("p", "status", this.labels.loading);
       status.setAttribute("role", "status");
       status.setAttribute("aria-live", "polite");
       status.setAttribute("aria-atomic", "true");
       content = node("div", "content");
+      grid = node("div", "teams");
+      content.append(toolbar, grid);
       dialog = node("dialog", "editor");
       dialog.setAttribute("aria-label", this.labels.editTitle);
       dialog.addEventListener("cancel", event => {
         if (this.gui.busy) event.preventDefault(); else { draft = null; }
       });
       dialog.addEventListener("close", () => { draft = null; restoreTrigger(); });
-      shell.append(header, intro, content, status, dialog);
+      shell.append(content, status, dialog);
       this.element.replaceChildren(shell);
       render();
     };
@@ -347,18 +399,20 @@ export const component = {
       const own = actor ? memberTeam(state, actor.id) : null;
       const teams = teamsFor(state ?? emptyState(this.data.key), this);
       const total = teams.reduce((sum, team) => sum + team.members.length, 0);
-      const toolbar = node("div", "toolbar");
-      const totals = node("div", "totals");
       const teamCount = teams.filter(team => team.members.length).length;
-      totals.append(stat(teamCount, this.labels[teamCount === 1 ? "oneTeam" : "teams"]),
+      totals.replaceChildren(stat(teamCount, this.labels[teamCount === 1 ? "oneTeam" : "teams"]),
         stat(total, this.labels[total === 1 ? "onePerson" : "people"]));
-      const sync = node("div", "sync");
-      sync.append(node("span", store.observe ? "sync-mode live" : "sync-mode", this.labels[store.observe ? "live" : "manual"]));
-      sync.append(button("refresh", () => this.refresh(), "secondary"));
-      toolbar.append(totals, sync);
-      const note = node("p", "membership", !this.user ? this.labels.readOnly : !actor ? this.labels.signIn : own
-        ? text("assigned", { team: teamName(state.teams[own - 1], own, this) }) : this.labels.unassigned);
-      const grid = node("div", "teams");
+      const realtime = Boolean(source.url && store.observe);
+      const live = realtime && this.gui.connection === "connected" && !this.gui.stale;
+      const mode = live ? "live" : !realtime ? "manual" : this.gui.connection === "connecting" ? "connecting" : "disconnected";
+      sync.replaceChildren(node("span", `sync-mode${live ? " live" : ""}`, this.labels[mode]));
+      // Keep a visible label if a custom configuration deliberately removes the refresh icon.
+      const iconOnly = live && String(this.icons.refresh ?? "").trim();
+      const refresh = button("refresh", () => this.refresh({ reconnect: true }), `secondary${iconOnly ? " icon-button" : ""}`);
+      refresh.setAttribute("aria-label", this.labels.refresh);
+      refresh.title = this.labels.refresh;
+      sync.append(refresh);
+      grid.replaceChildren();
       for (const team of teams) {
         const mine = own === team.number;
         const card = node("article", `team-card${mine ? " mine" : ""}${!team.members.length ? " empty" : ""}`);
@@ -376,26 +430,34 @@ export const component = {
           heading.append(edit);
         }
         card.append(heading);
-        const capacity = this.maxMembers
-          ? text("capacity", { count: team.members.length, max: this.maxMembers })
-          : team.members.length === 1 ? this.labels.oneMember : text("members", { count: team.members.length });
-        card.append(node("p", "capacity", capacity));
-        if (this.maxMembers) {
-          const meter = node("div", "capacity-bar");
-          const fill = node("span");
-          fill.style.width = `${Math.min(100, team.members.length / this.maxMembers * 100)}%`;
-          meter.append(fill); card.append(meter);
-        }
         const list = node("ul", "members");
         for (const member of team.members) {
           const row = node("li", "member");
           const avatar = node("span", "avatar", initials(member.name));
           avatar.setAttribute("aria-hidden", "true");
+          const picture = pictureURL(member.picture);
+          if (picture) {
+            const image = node("img");
+            image.alt = "";
+            image.loading = "lazy";
+            image.referrerPolicy = "no-referrer";
+            image.addEventListener("error", () => image.remove(), { once: true });
+            image.src = picture;
+            avatar.append(image);
+          }
           row.append(avatar, node("span", "member-name", member.name));
           if (member.id === actor?.id) row.append(node("span", "you", this.labels.you));
           list.append(row);
         }
-        if (team.members.length) card.append(list);
+        // Empty seats are presentation only; counters and saved members contain real people.
+        for (let seat = team.members.length; seat < this.maxMembers; seat++) {
+          const row = node("li", "member member-empty");
+          const avatar = node("span", "avatar", "+");
+          avatar.setAttribute("aria-hidden", "true");
+          row.append(avatar, node("span", "member-name", this.labels.emptyMember));
+          list.append(row);
+        }
+        if (list.childElementCount) card.append(list);
         else {
           const empty = node("div", "empty-state");
           empty.append(node("span", "empty-symbol", "+"), node("p", "", this.labels.empty),
@@ -415,15 +477,11 @@ export const component = {
           join.disabled = !actor || full || !team.joinable || !withinLimit || !canSwitch;
           footer.append(join);
         }
-        footer.append(node("span", "availability", full ? this.labels.full : this.maxMembers
-          ? this.maxMembers - team.members.length === 1 ? this.labels.oneFree
-            : text("free", { count: Math.max(0, this.maxMembers - team.members.length) }) : this.labels.unlimited));
         card.append(footer);
         grid.append(card);
       }
-      content.replaceChildren(toolbar, note, grid);
       content.setAttribute("aria-busy", String(this.gui.busy));
-      for (const control of content.querySelectorAll("button"))
+      for (const control of [...sync.querySelectorAll("button"), ...grid.querySelectorAll("button")])
         if (this.gui.busy || (this.gui.stale && control.dataset.action !== "refresh")) control.disabled = true;
       for (const control of dialog.querySelectorAll("input, button")) control.disabled = this.gui.busy;
       if (focusAction && !dialog.open) {
@@ -546,7 +604,7 @@ export function validateState(value, key) {
 function checkConfig(config) {
   for (const key of ["maxMembers", "maxTeams", "refreshInterval"])
     if (!Number.isSafeInteger(config[key]) || config[key] < 0) throw new Error(`${key} must be a non-negative integer.`);
-  for (const key of ["nameMaxLength", "retryLimit"])
+  for (const key of ["nameMaxLength", "retryLimit", "avatarSize"])
     if (!Number.isSafeInteger(config[key]) || config[key] < 1) throw new Error(`${key} must be a positive integer.`);
   if (!Array.isArray(config.teamNames) || config.teamNames.some(name => typeof name !== "string"))
     throw new Error("teamNames must be a string array.");
@@ -570,6 +628,16 @@ function stat(count, label) {
 }
 function initials(name) { return name.trim().split(/\s+/).slice(0, 2).map(part => [...part][0] ?? "").join("").toUpperCase(); }
 
+/** Only reusable web URLs and raster data URLs belong in shared member records, never tab-local blob URLs. */
+function pictureURL(value) {
+  if (typeof value !== "string") return null;
+  if (/^data:image\/(?:png|jpeg|gif|webp|avif);base64,[a-z0-9+/=\s]+$/i.test(value)) return value;
+  try {
+    const url = new URL(value);
+    return ["https:", "http:"].includes(url.protocol) && !url.username && !url.password ? url.href : null;
+  } catch { return null; }
+}
+
 /** Share local serialization and observation across instances of this component module. */
 const localQueues = new WeakMap();
 async function localTransaction(store, source, key, operation) {
@@ -585,12 +653,13 @@ async function localTransaction(store, source, key, operation) {
   finally { if (localQueues.get(store) === pending) localQueues.delete(store); }
 }
 const observers = new WeakMap();
-function observeStore(store, changed, failed) {
+function observeStore(store, changed, failed, connectionChanged) {
   let entry = observers.get(store);
   if (!entry) {
     const previous = store.onchange;
     const previousError = store.onerror;
-    entry = { listeners: new Set(), previous, previousError };
+    const previousConnection = store.onconnectionchange;
+    entry = { listeners: new Set(), previous, previousError, previousConnection };
     entry.change = async value => {
       for (const listener of entry.listeners) listener.changed(value);
       if (previous && previous !== store.parent?.start) await previous(value);
@@ -599,15 +668,20 @@ function observeStore(store, changed, failed) {
       for (const listener of entry.listeners) listener.failed(error);
       if (previousError) await previousError(error);
     };
-    store.onchange = entry.change; store.onerror = entry.error;
+    entry.connection = async state => {
+      for (const listener of entry.listeners) listener.connectionChanged(state);
+      if (previousConnection) await previousConnection(state);
+    };
+    store.onchange = entry.change; store.onerror = entry.error; store.onconnectionchange = entry.connection;
     observers.set(store, entry);
   }
-  const listener = { changed, failed }; entry.listeners.add(listener);
+  const listener = { changed, failed, connectionChanged }; entry.listeners.add(listener);
   return () => {
     entry.listeners.delete(listener);
     if (entry.listeners.size) return;
     if (store.onchange === entry.change) store.onchange = entry.previous;
     if (store.onerror === entry.error) store.onerror = entry.previousError;
+    if (store.onconnectionchange === entry.connection) store.onconnectionchange = entry.previousConnection;
     observers.delete(store);
   };
 }

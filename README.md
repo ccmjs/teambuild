@@ -36,10 +36,22 @@ begleitende Erweiterung in `ccm-server/lib/data.mjs` muss dafür auf dem Server
 bereitgestellt werden. Das unveränderte ccmjs v28 überträgt die Option bereits.
 Es gibt keinen automatischen Rückfall auf ungeschütztes Überschreiben.
 
-`index.html` zeigt eine Vorschau mit Beispieldaten und ohne Anmeldung. Die Seite
-über einen HTTP-Server öffnen. `resources/configs.mjs` enthält außerdem die
+`index.html` zeigt eine interaktive Demo mit User-Komponente. Die Seite über einen
+HTTP-Server öffnen. Anmeldung und Teamdaten nutzen den lokalen CCM-Server unter
+`http://localhost:8080`. Die Teams werden im Datastore `teambuild` unter dem Schlüssel
+`demo` gespeichert und bleiben beim Neuladen erhalten. WebSocket-Beobachtung ist
+aktiviert: Beitritte, Austritte und Namensänderungen erscheinen automatisch in
+allen geöffneten Demo-Instanzen. Ohne vorhandenen Datensatz beginnt die Demo mit
+einem leeren Team; der erste Beitritt legt die Teambildung auf dem Server an.
+Nach der Anmeldung sind Teambeitritt, Teamwechsel, Austritt und Umbenennen möglich.
+`resources/configs.mjs` enthält außerdem die
 Konfigurationen `realtime`, `manual` und `frozen` für den lokalen CCM-Server.
 Bei Bedarf lassen sie sich mit `["ccm.load", "./resources/configs.mjs#realtime"]` laden.
+
+Wenn `user` gesetzt ist, rendert die User-Komponente rechts oben in der Toolbar
+ihren eigenen Login-Button sowie nach der Anmeldung das Profil und den
+Logout-Button. Ihr Dialog bleibt auch beim Aktualisieren der Teams erhalten.
+Ohne `user` wird kein Loginbereich angezeigt; die Teams bleiben nur einsehbar.
 
 ## Konfiguration
 
@@ -48,7 +60,7 @@ Bei Bedarf lassen sie sich mit `["ccm.load", "./resources/configs.mjs#realtime"]
 | `data.store` | `["ccm.store"]` | CCM-Datastore; standardmäßig flüchtiger Speicher |
 | `data.key` | `"teambuild"` | Ein Datensatz pro Teambildung; auch zusammengesetzte CCM-Schlüssel möglich |
 | `data.permissions` | siehe unten | Berechtigungen beim erstmaligen Erstellen; `null` erzeugt öffentliche Daten |
-| `user` | nicht gesetzt | Optionale User-Komponente; Loginbereich oben rechts |
+| `user` | nicht gesetzt | Optionale User-Komponente; Loginbereich rechts in der Toolbar |
 | `maxMembers` | `0` | Maximale Personen pro Team; `0` = unbegrenzt |
 | `maxTeams` | `0` | Maximale Teamzahl; `0` = unbegrenzt |
 | `teamNames` | `[]` | Voreingestellte Namen in Teamreihenfolge |
@@ -58,7 +70,7 @@ Bei Bedarf lassen sie sich mit `["ccm.load", "./resources/configs.mjs#realtime"]
 | `teamOverrides` | `[]` | Regeln pro Team; Eintrag 0 gilt für Team 1 |
 | `allowSwitch` | `true` | Direkter Teamwechsel; prüft Austritts- und Beitrittsrecht gemeinsam |
 | `nameMaxLength` | `60` | Maximale Länge eines angepassten Teamnamens |
-| `title`, `description` | deutsche Texte | Überschrift und Beschreibung |
+| `avatarSize` | `96` | Maximale Bildkante in Pixeln für die Kopie eines privat hochgeladenen Profilbilds |
 | `labels` | deutsche Texte | Alle Beschriftungen, Hinweise und Fehlermeldungen |
 | `icons` | SVGs | Button-Icons als vertrauenswürdiges SVG-Markup, Textsymbol oder leerer String |
 | `theme` | `{}` | CSS-Variablen ohne Präfix `--tb-` |
@@ -74,7 +86,6 @@ und `theme` sind möglich. Funktionen sind nur für die optionalen Callbacks nö
 
 ```js
 {
-  title: "Projektgruppen",
   labels: { join: "Mitmachen", leave: "Austreten", refresh: "Neu laden" },
   icons: { join: "+", leave: "↗", refresh: "↻" },
   theme: { accent: "#6045a0", "accent-hover": "#49327f", radius: "14px" }
@@ -93,6 +104,11 @@ Beitritt aktiviert diesen Platz und macht den nächsten sichtbar. Leere Plätze
 zwischen belegten Teams bleiben verfügbar; mehrere leere Plätze am Ende werden
 zu einem sichtbaren Platz zusammengefasst. Ihre gespeicherten Namen bleiben erhalten.
 Voreingestellte Namen erzeugen noch keine zusätzlichen Teamkarten.
+
+Bei begrenzter Teamgröße zeigt die Mitgliederliste für jeden freien Platz einen
+zusätzlichen Eintrag. Dessen Beschriftung ist über `labels.emptyMember` anpassbar.
+Bei unbegrenzter Teamgröße (`maxMembers: 0`) werden keine freien Plätze ergänzt.
+Diese Platzhalter zählen nicht als Personen und werden nicht gespeichert.
 
 Eine Person kann gleichzeitig nur in einem Team sein. Ein Teamwechsel wird als
 eine gemeinsame Änderung gespeichert. Er erfordert `leavable` für das bisherige
@@ -137,7 +153,7 @@ Gespeichert wird ein vollständiger Datensatz:
   mutation: "eindeutige-id-der-letzten-aenderung",
   teams: [
     { name: "Ideenwerkstatt", members: [
-      { id: "ccm:account_key", name: "Lea Sommer" }
+      { id: "ccm:account_key", name: "Lea Sommer", picture: "https://example.org/lea.jpg" }
     ] }
   ],
   _: {
@@ -153,6 +169,22 @@ der Nachvollziehbarkeit; die Konfliktprüfung vergleicht den gesamten Datensatz.
 `mutation` ermöglicht es, einen gespeicherten Schreibversuch trotz verlorener
 HTTP-Antwort wiederzuerkennen. Ein bloßer Seitenaufruf legt noch keinen Datensatz an.
 Ein unbekanntes Datenformat wird nicht automatisch ersetzt.
+
+Beim Beitritt oder Teamwechsel wird der Anzeigename aus `user.getState().user`
+übernommen, ersatzweise der Account-Schlüssel. Eine dort vorhandene `picture`-URL
+wird optional mitgespeichert und im Avatar angezeigt. Ohne Bild oder bei einem
+Ladefehler erscheinen die Initialen. Die Angaben bleiben als Stand des Beitritts
+gespeichert; bestehende Mitgliedseinträge werden nicht automatisch mit späteren
+Profiländerungen synchronisiert. Unterstützt werden HTTP(S)-Bildadressen und
+Rasterbilder als Data-URL.
+
+Bei lokalen CCM-Konten mit aktiviertem `user.profilePicture` wird ein privat
+hochgeladenes Bild über die Account- und Download-API geladen und beim Beitritt
+als verkleinerte Data-URL in den Mitgliedseintrag kopiert. Diese Kopie ist für
+alle leseberechtigten Personen der Teambildung sichtbar; die Originaldatei
+behält ihre privaten Berechtigungen. Tokens und lokale Blob-URLs werden nicht
+mitgespeichert. Ein fehlendes oder nicht erreichbares Bild verhindert den
+Beitritt nicht; dann werden die Initialen verwendet.
 
 Standardmäßig wird beim ersten Beitritt `data.permissions` mit
 `{ access: { get: "all", set: "realm", del: "owner" } }` angewendet; der erste
@@ -183,8 +215,20 @@ des Backends nicht als Sicherheitsgrenze erzwingen.
 `observe: { key: "seminar" }` aktiviert die WebSocket-Beobachtung im Remote-Datastore.
 Die Serveradresse bleibt eine HTTP(S)-URL: ccmjs schreibt über HTTP und nutzt den
 WebSocket für Benachrichtigungen. Ohne `observe` werden Änderungen über den
-Refresh-Button geladen. Dieser bleibt auch im Echtzeitmodus als manueller Abgleich
-verfügbar. Fokuswechsel und die Rückkehr der Netzwerkverbindung lösen ebenfalls
+Refresh-Button geladen. Bei einer vom Server bestätigten Live-Verbindung wird er
+als Icon mit Tooltip und zugänglicher Beschriftung angezeigt. Ohne Realtime,
+während des Verbindungsaufbaus oder bei Verbindungsproblemen trägt er zusätzlich
+die sichtbare Beschriftung. Ein Klick lädt den aktuellen Stand und startet eine
+unterbrochene oder nicht vollständig aufgebaute Live-Verbindung erneut. Sobald der
+Server die Beobachtung bestätigt, werden verpasste Änderungen nachgeladen und
+weitere Änderungen wieder automatisch übernommen.
+
+Das mitgelieferte Framework meldet dafür den tatsächlichen Beobachtungszustand
+über `getConnectionState()` und `onconnectionchange`. Bei einem anderen Framework
+ohne diese Schnittstelle bleibt die Beschriftung vorsichtshalber sichtbar. Ist
+`icons.refresh` leer, bleibt sie ebenfalls erhalten.
+
+Fokuswechsel und die Rückkehr der Netzwerkverbindung lösen ebenfalls
 einen Abgleich aus. Im Echtzeitmodus ergänzt `refreshInterval` die Benachrichtigungen,
 damit nach einer Unterbrechung verpasste Änderungen nachgeladen werden.
 
@@ -234,6 +278,7 @@ sollte immer den CCM-Server verwenden.
 | --- | --- |
 | `start()` | Ansicht aufbauen bzw. aktuellen Stand neu laden |
 | `refresh()` | Datensatz erneut laden |
+| `refresh({ reconnect: true })` | Zusätzlich eine unterbrochene oder hängende Live-Verbindung neu aufbauen |
 | `getValue()` | Unabhängige Kopie des aktuellen Datensatzes |
 | `getTeams()` | Sichtbare Teams einschließlich des freien Platzes und ihrer Regeln |
 | `join(1)` | Team 1 beitreten bzw. dorthin wechseln |
