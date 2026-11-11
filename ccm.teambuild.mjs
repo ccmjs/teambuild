@@ -2,7 +2,8 @@
  * Collaborative team formation with conditional writes and optional live updates.
  *
  * File guide: config describes the public options; Instance owns lifecycle, reads,
- * writes and DOM views. The exported domain helpers below it apply rules without I/O.
+ * writes and DOM views. config.views creates markup; Instance's render() patches it.
+ * The exported domain helpers below it apply rules without I/O.
  * Local locking and shared datastore subscriptions are handled at the end of the file.
  * A notification requests a full read; only the resulting DOM changes are incremental.
  *
@@ -18,6 +19,77 @@ export const component = {
   config: {
     /** Stylesheet dependency loaded by CCM; replace or extend it to customize the instance's appearance. */
     css: ["ccm.load", "././resources/styles.css"],
+
+    /** Versioned HTML templating and declarative event binding; loaded through CCM like the stylesheet. */
+    ui: ["ccm.load", "././libs/ccm-ui/ccm-ui-1.0.0.min.mjs"],
+
+    /**
+     * Synchronous Element factories: return one fresh, detached root for each newly needed view.
+     * Interpolations run only at creation; renderTeam/renderMember/updateButton own later changes.
+     * A custom interpolation is not reactive: dynamic text must use an anchor patched by the renderer.
+     * Partial overrides are merged; a module of factories may also be supplied through ccm.load.
+     * Each factory receives this instance as app and returns one fresh Element via app.ui.html.
+     * Treat the optional second argument as read-only; member metadata may reference the accepted state.
+     * data-ref names are local to each view; createView caches these descendant references once.
+     * Preserve the managed child lists and data-on-* actions documented in README's HTML templates section.
+     * Templates are trusted configuration; interpolate user text normally and reserve ui.raw for trusted icons.
+     */
+    views: {
+      /** Persistent shell. Keep user empty: its child component is inserted after our events are bound. */
+      main: app => app.ui.html`
+        <section class="teambuild">
+          <div class="content" data-ref="content">
+            <div class="toolbar">
+              <div class="totals">
+                <span class="stat"><strong data-ref="teamCount"></strong><span data-ref="teamLabel"></span></span>
+                <span class="stat"><strong data-ref="peopleCount"></strong><span data-ref="peopleLabel"></span></span>
+              </div>
+              <div class="sync" data-ref="sync"><span class="sync-mode" data-ref="syncMode"></span></div>
+              ${app.user ? app.ui.html`<div class="user-area" data-ref="user"></div>` : null}
+            </div>
+            <div class="teams" data-ref="grid"></div>
+          </div>
+          <p class="status" data-ref="status" role="status" aria-live="polite" aria-atomic="true">${app.labels.loading}</p>
+          <dialog class="editor" data-ref="dialog" aria-label="${app.labels.editTitle}"
+                  data-on-cancel="cancelEditor" data-on-close="closedEditor"></dialog>
+        </section>
+      `,
+      /** Team card for a stable 1-based number; live name, rules and members are supplied by renderTeam. */
+      team: (app, { number }) => app.ui.html`
+        <article class="team-card" data-team="${number}">
+          <div class="card-top" data-ref="top"><span class="team-number" data-ref="caption"></span><span class="badge" data-ref="badge"></span></div>
+          <div class="team-heading" data-ref="heading"><h2 data-ref="title"></h2></div>
+          <ul class="members" data-ref="list"></ul>
+          <div class="empty-state" data-ref="empty">
+            <span class="empty-symbol">+</span><p data-ref="emptyText"></p><p class="empty-hint" data-ref="emptyHint"></p>
+          </div>
+          <div class="card-footer" data-ref="footer"></div>
+        </article>
+      `,
+      /** Real member row; Member is a creation-time public snapshot. renderMember patches later metadata. */
+      member: (app, member) => app.ui.html`
+        <li class="member" data-member="${member.id}"><span class="avatar" data-ref="avatar" aria-hidden="true"></span><span class="member-name" data-ref="name"></span><span class="you" data-ref="you"></span></li>
+      `,
+      /** Presentation-only free seat. The label is patched when labels.emptyMember changes. */
+      seat: app => app.ui.html`
+        <li class="member member-empty"><span class="avatar" aria-hidden="true">+</span><span class="member-name" data-ref="label"></span></li>
+      `,
+      /** Shared button. The current data-action determines its behavior; icon and label are patched independently. */
+      button: app => app.ui.html`
+        <button type="button" class="button" data-on-click="action"><span class="icon" data-ref="icon" aria-hidden="true"></span><span data-ref="label"></span></button>
+      `,
+      /** New image for a changed, valid picture URL; an unchanged URL preserves the existing image. */
+      image: app => app.ui.html`<img alt="" loading="lazy" referrerpolicy="no-referrer" data-on-error="imageError">`,
+      /** Fresh rename form per opening; second argument is the current visible-team descriptor. */
+      editor: (app, team) => app.ui.html`
+        <form data-on-submit="saveName">
+          <h2>${app.labels.editTitle}</h2><p class="editor-hint">${app.labels.editHint}</p>
+          <label class="name-label">${app.labels.name}<input data-ref="name" name="name" value="${team.name}" required maxlength="${app.nameMaxLength}"></label>
+          <p class="editor-error" data-ref="error" role="alert"></p>
+          <div class="editor-actions" data-ref="actions"></div>
+        </form>
+      `,
+    },
 
     /** Shared dataset containing all teams and members of one formation. */
     data: {
@@ -261,9 +333,11 @@ export const component = {
     // state is the latest accepted datastore snapshot; null means no dataset exists yet.
     // store is the resolved CCM accessor; source is its connection/storage configuration.
     let state = null, store, source, shell, content, status, dialog, unsubscribe;
-    let totals, sync, grid, teamStat, peopleStat, syncMode, refreshButton;
-    // Retain cards by 1-based team number and rows by realm:key, even across team switches.
-    // Button metadata follows the element's lifetime; render() removes obsolete card/row entries.
+    let grid, teamCount, teamLabel, peopleCount, peopleLabel, syncMode, refreshButton, editorView;
+    // View records hold the root and cached data-ref Elements, not another copy of the saved dataset.
+    // Retain cards by 1-based team number and rows globally by realm:key, even across team switches.
+    // Each card also retains its buttons and free seats; button metadata follows the element's lifetime.
+    // render() removes obsolete card/row entries only after processing the complete team list.
     const teamViews = new Map(), memberViews = new Map(), buttonViews = new WeakMap();
     // readVersion invalidates stale responses within this instance; it is not the saved revision.
     // refreshing/active track the current read/write promises; refreshPending coalesces later reads.
@@ -278,9 +352,12 @@ export const component = {
 
     /** CCM init: normalize partial options and capture dependencies after CCM has resolved them. */
     this.init = async () => {
-      // CCM replaces nested configuration objects; restore omitted labels, icons and data defaults.
+      // CCM replaces nested configuration objects; restore omitted labels, icons, views and data defaults.
       this.labels = { ...component.config.labels, ...this.labels };
       this.icons = { ...component.config.icons, ...this.icons };
+      this.views = { ...component.config.views, ...this.views };
+      for (const name of Object.keys(component.config.views))
+        if (typeof this.views[name] !== "function") throw new Error(`views.${name} must be an Element factory.`);
       this.data = { key: component.config.data.key,
         permissions: structuredClone(component.config.data.permissions), ...this.data };
       checkConfig(this);
@@ -563,8 +640,7 @@ export const component = {
           if (draft) {
             // Keep the draft, but use the newly displayed authoritative name for an explicit retry.
             draft.expectedName = teamName(state?.teams[draft.number - 1], draft.number, this);
-            const feedback = dialog.querySelector(".editor-error");
-            feedback.textContent = message(error, "saveFailed");
+            editorView.error.textContent = message(error, "saveFailed");
           }
           report(error);
         }
@@ -577,41 +653,71 @@ export const component = {
       }
     };
 
-    /** Create the persistent shell once. Refreshes patch cards without remounting authentication or dialogs. */
+    /**
+     * createView binds data-on-* to this stable handler map once per new view.
+     * data-on-click="action" stays fixed; updateButton changes data-action (join/switch/leave).
+     * Reading current attributes and view.team here avoids rebinding or capturing obsolete state.
+     */
+    this.events = {
+      action: ({ currentTarget: target }) => {
+        // Capture currentTarget before the asynchronous work; DOM events clear it after dispatch.
+        Promise.resolve().then(() => {
+          const number = Number(target.closest("[data-team]")?.dataset.team);
+          switch (target.dataset.action) {
+            case "refresh": return this.refresh({ reconnect: true });
+            case "join": case "switch": return this.join(number);
+            case "leave": return this.leave();
+            case "edit": return openEditor(teamViews.get(number).team);
+            case "cancel": return closeEditor();
+            // Save is a native submit button; saveName handles both clicks and keyboard submission.
+          }
+        }).catch(() => {}); // refresh/mutate already report action errors; ccm-ui does not await handlers.
+      },
+      cancelEditor: event => {
+        if (this.gui.busy) event.preventDefault(); else draft = null;
+      },
+      closedEditor: () => { draft = null; editorView = null; restoreTrigger(); },
+      saveName: async event => {
+        event.preventDefault();
+        if (this.gui.busy || !event.currentTarget.reportValidity() || !draft) return;
+        try { await this.rename(draft.number, editorView.name.value, draft.expectedName); }
+        catch { /* mutate preserves the form and supplies its accessible error. */ }
+      },
+      imageError: event => event.currentTarget.remove(),
+    };
+
+    /**
+     * Create one view record: { root, ...cached descendant Elements named by data-ref }.
+     * Check required anchors once, before optional nodes can be detached by reconcileChildren.
+     * The factory must preserve the documented element types and child lists; those are not validated here.
+     * Called only for new views, never to refresh an existing card or row. Binding also happens here once.
+     */
+    const createView = (name, data, required = []) => {
+      const root = this.views[name](this, data);
+      if (!(root instanceof Element)) throw new Error(`views.${name} must return one fresh Element.`);
+      const view = { root };
+      for (const key of required) {
+        const matches = root.querySelectorAll(`[data-ref="${key}"]`);
+        if (matches.length !== 1) throw new Error(`views.${name} requires exactly one data-ref="${key}".`);
+        view[key] = matches[0];
+      }
+      this.ui.bind(root, this);
+      return view;
+    };
+
+    /** Mount once; bind our empty shell before inserting the independently bound User component. */
     const mount = () => {
-      shell = node("section", "teambuild");
+      const view = createView("main", undefined, ["content", "grid", "status", "dialog", "sync", "syncMode",
+        "teamCount", "teamLabel", "peopleCount", "peopleLabel", ...(this.user ? ["user"] : [])]);
+      shell = view.root;
+      ({ content, grid, status, dialog, syncMode, teamCount, teamLabel, peopleCount, peopleLabel } = view);
       for (const [key, value] of Object.entries(this.theme))
         if (/^[a-z][a-z0-9-]*$/.test(key)) shell.style.setProperty(`--tb-${key}`, String(value));
-      // Keep the toolbar and authentication host connected while the team list refreshes.
-      const toolbar = node("div", "toolbar");
-      totals = node("div", "totals");
-      teamStat = stat(0, ""); peopleStat = stat(0, "");
-      totals.append(teamStat, peopleStat);
-      sync = node("div", "sync");
-      syncMode = node("span", "sync-mode");
-      refreshButton = button("refresh", () => this.refresh({ reconnect: true }), "secondary");
-      sync.append(syncMode, refreshButton);
-      toolbar.append(totals, sync);
-      if (this.user) {
-        const userArea = node("div", "user-area");
-        userArea.append(this.user.host);
-        toolbar.append(userArea);
-      }
-      status = node("p", "status", this.labels.loading);
-      status.setAttribute("role", "status");
-      status.setAttribute("aria-live", "polite");
-      status.setAttribute("aria-atomic", "true");
-      content = node("div", "content");
-      grid = node("div", "teams");
-      content.append(toolbar, grid);
-      dialog = node("dialog", "editor");
-      dialog.setAttribute("aria-label", this.labels.editTitle);
-      dialog.addEventListener("cancel", event => {
-        if (this.gui.busy) event.preventDefault(); else { draft = null; }
-      });
-      dialog.addEventListener("close", () => { draft = null; restoreTrigger(); });
-      shell.append(content, status, dialog);
-      this.element.replaceChildren(shell);
+      refreshButton = button("refresh", "secondary");
+      view.sync.append(refreshButton);
+      if (this.user) view.user.append(this.user.host);
+      // No instance argument: createView already bound our controls; the User owns its own events.
+      this.ui.render(shell, this.element);
       render();
     };
 
@@ -624,53 +730,42 @@ export const component = {
     /** Patch a retained button, including its current action; never replace unchanged SVGs or labels. */
     const updateButton = (result, action, className = "", label = this.labels[action]) => {
       const view = buttonViews.get(result);
-      setProperty(result, "className", `button ${className}`.trim());
+      setProperty(result, "className", `${view.baseClass} ${className}`.trim());
       setAttribute(result, "data-action", action);
       const markup = String(this.icons[action] ?? "");
       if (view.markup !== markup) {
-        // Only trusted configuration icons use HTML; team/member names always use textContent.
-        if (markup.trim().startsWith("<svg")) view.icon.innerHTML = markup;
-        else view.icon.textContent = markup;
+        // Only trusted configuration icons bypass escaping; user-provided text is never passed to raw().
+        this.ui.render(this.ui.html`${markup.trim().startsWith("<svg") ? this.ui.raw(markup) : markup}`, view.icon);
         view.markup = markup;
       }
       setProperty(view.label, "textContent", String(label ?? ""));
     };
 
-    const button = (action, handler, className = "", label = this.labels[action]) => {
-      const result = node("button");
-      result.type = "button";
-      const icon = node("span", "icon");
-      icon.setAttribute("aria-hidden", "true");
-      const caption = node("span");
-      result.append(icon, caption);
-      buttonViews.set(result, { icon, label: caption });
+    const button = (action, className = "", label = this.labels[action]) => {
+      const view = createView("button", undefined, ["icon", "label"]);
+      const result = view.root;
+      buttonViews.set(result, { ...view, baseClass: result.className });
       updateButton(result, action, className, label);
-      result.addEventListener("click", () => { Promise.resolve().then(() => handler(result)).catch(() => {}); });
       return result;
     };
 
-    /** Create a card's DOM references; renderTeam supplies its current content and effective rules. */
+    /** Create the card's retained view record; renderTeam supplies current content and effective rules. */
     const createTeamView = number => {
-      const card = node("article", "team-card"); card.dataset.team = String(number);
-      const top = node("div", "card-top"), caption = node("span", "team-number"), badge = node("span", "badge");
-      const heading = node("div", "team-heading"), title = node("h2"), list = node("ul", "members");
-      const empty = node("div", "empty-state"), emptyText = node("p"), emptyHint = node("p", "empty-hint");
-      empty.append(node("span", "empty-symbol", "+"), emptyText, emptyHint);
-      const footer = node("div", "card-footer");
-      // This handler reads the button's current action instead of capturing an old join/leave state.
-      const action = button("join", target => target.dataset.action === "leave" ? this.leave() : this.join(number));
-      footer.append(action);
-      return { card, top, caption, badge, heading, title, list, empty, emptyText, emptyHint, footer, action, seats: [] };
+      const view = createView("team", { number }, ["top", "caption", "badge", "heading", "title", "list", "empty", "emptyText", "emptyHint", "footer"]);
+      view.root.dataset.team = String(number);
+      const action = button("join");
+      view.footer.append(action);
+      return { ...view, card: view.root, action, seats: [] };
     };
 
     /** A member retains its row and avatar even when moving between team lists. */
     const renderMember = (member, actor) => {
       let view = memberViews.get(member.id);
       if (!view) {
-        const row = node("li", "member"); row.dataset.member = member.id;
-        const avatar = node("span", "avatar"); avatar.setAttribute("aria-hidden", "true");
-        const letters = document.createTextNode(""); avatar.append(letters);
-        view = { row, avatar, letters, name: node("span", "member-name"), you: node("span", "you"), picture: null };
+        view = createView("member", member, ["avatar", "name", "you"]);
+        view.row = view.root; view.row.dataset.member = member.id;
+        view.letters = document.createTextNode(""); view.avatar.append(view.letters);
+        view.picture = null;
         memberViews.set(member.id, view);
       }
       setProperty(view.name, "textContent", member.name);
@@ -683,9 +778,7 @@ export const component = {
           view.picture = picture;
           view.image?.remove(); view.image = null;
           if (picture) {
-            const image = node("img");
-            image.alt = ""; image.loading = "lazy"; image.referrerPolicy = "no-referrer";
-            image.addEventListener("error", () => image.remove(), { once: true });
+            const image = createView("image").root;
             image.src = picture;
             view.image = image; view.avatar.append(image);
           }
@@ -696,18 +789,23 @@ export const component = {
       return view.row;
     };
 
-    /** Patch one card. team is a derived view descriptor; neither it nor the saved members are mutated here. */
+    /**
+     * Patch one retained card using the latest derived team descriptor; saved data is never mutated here.
+     * reconcileChildren owns the listed parents' entire direct child lists, including optional nodes.
+     * Detached badges, edit buttons and list/empty views keep their cached references for later reuse.
+     */
     const renderTeam = (view, team, actor, own, seenMembers) => {
       view.team = team;
       const mine = own === team.number;
-      setProperty(view.card, "className", `team-card${mine ? " mine" : ""}${!team.members.length ? " empty" : ""}`);
+      setClass(view.card, "mine", mine);
+      setClass(view.card, "empty", !team.members.length);
       setProperty(view.caption, "textContent", text("teamNumber", { number: String(team.number).padStart(2, "0") }));
       setProperty(view.badge, "textContent", String(this.labels.yourTeam));
       reconcileChildren(view.top, [view.caption, ...(mine ? [view.badge] : [])]);
       setProperty(view.title, "textContent", team.name);
       const editable = mine && team.editable;
       if (editable) {
-        view.edit ??= button("edit", () => openEditor(view.team), "icon-button");
+        view.edit ??= button("edit", "icon-button");
         updateButton(view.edit, "edit", "icon-button");
         setAttribute(view.edit, "aria-label", this.labels.edit);
         setAttribute(view.edit, "title", this.labels.edit);
@@ -722,9 +820,8 @@ export const component = {
       const free = Math.max(0, this.maxMembers - team.members.length);
       while (view.seats.length > free) view.seats.pop().row.remove();
       while (view.seats.length < free) {
-        const row = node("li", "member member-empty"), avatar = node("span", "avatar", "+"), label = node("span", "member-name");
-        avatar.setAttribute("aria-hidden", "true"); row.append(avatar, label);
-        view.seats.push({ row, label });
+        const seat = createView("seat", undefined, ["label"]);
+        view.seats.push({ row: seat.root, label: seat.label });
       }
       for (const seat of view.seats) {
         setProperty(seat.label, "textContent", String(this.labels.emptyMember));
@@ -746,7 +843,12 @@ export const component = {
         ? !team.leavable : !actor || full || !team.joinable || !withinLimit || !canSwitch));
     };
 
-    /** Scan all visible teams, patch differing DOM values and release views no longer present. No datastore I/O. */
+    /**
+     * Reconcile the accepted snapshot plus current identity, rules and gui state. No datastore I/O.
+     * Unlike ui.render(), this function retains existing roots and scans for changed properties/positions.
+     * Create missing views, patch all visible teams, then release obsolete records after possible row moves.
+     * Login, busy/stale and connection changes also call this function without changing the dataset.
+     */
     const render = () => {
       if (!content || destroyed) return;
       const focused = this.element.getRootNode().activeElement;
@@ -756,15 +858,15 @@ export const component = {
       const own = actor ? memberTeam(state, actor.id) : null;
       const teams = visibleTeams(state ?? emptyState(this.data.key), this);
       const total = teams.reduce((sum, team) => sum + team.members.length, 0);
-      const teamCount = teams.filter(team => team.members.length).length;
-      setProperty(teamStat.firstChild, "textContent", String(teamCount));
-      setProperty(teamStat.lastChild, "textContent", String(this.labels[teamCount === 1 ? "oneTeam" : "teams"]));
-      setProperty(peopleStat.firstChild, "textContent", String(total));
-      setProperty(peopleStat.lastChild, "textContent", String(this.labels[total === 1 ? "onePerson" : "people"]));
+      const occupied = teams.filter(team => team.members.length).length;
+      setProperty(teamCount, "textContent", String(occupied));
+      setProperty(teamLabel, "textContent", String(this.labels[occupied === 1 ? "oneTeam" : "teams"]));
+      setProperty(peopleCount, "textContent", String(total));
+      setProperty(peopleLabel, "textContent", String(this.labels[total === 1 ? "onePerson" : "people"]));
       const realtime = Boolean(source.url && store.observe);
       const live = realtime && this.gui.connection === "connected" && !this.gui.stale;
       const mode = live ? "live" : !realtime ? "manual" : this.gui.connection === "connecting" ? "connecting" : "disconnected";
-      setProperty(syncMode, "className", `sync-mode${live ? " live" : ""}`);
+      setClass(syncMode, "live", live);
       setProperty(syncMode, "textContent", String(this.labels[mode]));
       // Keep a visible label if a custom configuration deliberately removes the refresh icon.
       const iconOnly = live && String(this.icons.refresh ?? "").trim();
@@ -792,29 +894,19 @@ export const component = {
       }
     };
 
-    /** Capture the displayed name for conflict detection; incoming updates leave the input value untouched. */
+    /**
+     * Create a fresh form for each opening inside the persistent dialog; capture the name for conflict checks.
+     * Incoming updates may disable its controls but leave the user's input value and form bindings intact.
+     */
     const openEditor = team => {
       trigger = { number: team.number, action: "edit" };
       draft = { number: team.number, expectedName: team.name };
-      const form = node("form");
-      form.append(node("h2", "", this.labels.editTitle), node("p", "editor-hint", this.labels.editHint));
-      const label = node("label", "name-label", this.labels.name);
-      const input = node("input");
-      input.name = "name"; input.value = team.name; input.required = true; input.maxLength = this.nameMaxLength;
-      label.append(input); form.append(label);
-      const feedback = node("p", "editor-error"); feedback.setAttribute("role", "alert"); form.append(feedback);
-      const actions = node("div", "editor-actions");
-      const cancel = button("cancel", closeEditor, "secondary");
-      const save = button("save", () => {}, "primary"); save.type = "submit";
-      actions.append(cancel, save); form.append(actions);
-      form.addEventListener("submit", async event => {
-        event.preventDefault();
-        if (this.gui.busy || !form.reportValidity() || !draft) return;
-        try { await this.rename(draft.number, input.value, draft.expectedName); }
-        catch { /* mutate preserves the form and supplies its accessible error. */ }
-      });
-      dialog.replaceChildren(form);
-      dialog.showModal(); input.focus(); input.select();
+      editorView = createView("editor", team, ["name", "error", "actions"]);
+      const cancel = button("cancel", "secondary");
+      const save = button("save", "primary"); save.type = "submit";
+      editorView.actions.append(cancel, save);
+      this.ui.render(editorView.root, dialog);
+      dialog.showModal(); editorView.name.focus(); editorView.name.select();
     };
     const restoreTrigger = () => {
       if (!trigger || destroyed) return;
@@ -822,7 +914,7 @@ export const component = {
       trigger = null;
     };
     const closeEditor = () => {
-      draft = null;
+      draft = null; editorView = null;
       if (dialog?.open) dialog.close();
     };
 
@@ -980,13 +1072,6 @@ function format(value, values) {
   return String(value).replace(/\{(\w+)\}/g, (match, key) => values[key] ?? match);
 }
 
-function node(tag, className = "", text) {
-  const result = document.createElement(tag);
-  if (className) result.className = className;
-  if (text !== undefined) result.textContent = text;
-  return result;
-}
-
 /** Avoid even no-op DOM writes so equal snapshots leave existing nodes, images and focus untouched. */
 function setProperty(element, property, value) {
   if (element[property] !== value) element[property] = value;
@@ -997,8 +1082,15 @@ function setAttribute(element, name, value) {
   if (element.getAttribute(name) !== value) element.setAttribute(name, value);
 }
 
+/** Preserve template-specific classes while changing only the component-owned state flags. */
+function setClass(element, name, enabled) {
+  if (element.classList.contains(name) !== enabled) element.classList.toggle(name, enabled);
+}
+
 /**
  * Match an ordered list of existing node references; callers provide each node at most once.
+ * Own the parent's entire direct child list: unlisted nodes, including custom wrappers, are removed.
+ * Template extensions must live inside a retained child whose contents are not patched as a leaf.
  * Remove obsolete children first to avoid needlessly moving retained nodes past disappearing ones.
  * insertBefore also moves a retained member row from its previous team without recreating it.
  */
@@ -1010,10 +1102,6 @@ function reconcileChildren(parent, children) {
     if (child === cursor) cursor = cursor.nextSibling;
     else parent.insertBefore(child, cursor);
   }
-}
-
-function stat(count, label) {
-  const result = node("span", "stat"); result.append(node("strong", "", count), node("span", "", label)); return result;
 }
 
 function initials(name) { return name.trim().split(/\s+/).slice(0, 2).map(part => [...part][0] ?? "").join("").toUpperCase(); }

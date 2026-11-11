@@ -2,8 +2,9 @@
 
 A ccmjs v28 component for collaborative team formation, with optional authentication,
 configurable team rules, responsive team cards and safe concurrent updates.
-Component logic and UI rendering live in `ccm.teambuild.mjs`; the stylesheet is
-loaded through a `ccm.load` dependency. No build step is required.
+Component logic, HTML templates and incremental UI updates live in `ccm.teambuild.mjs`.
+The stylesheet and the bundled, versioned `ccm-ui` module are loaded through
+`ccm.load` dependencies. No build step is required.
 
 ## Embedding
 
@@ -79,6 +80,8 @@ area and the team formation is read-only.
 | `icons` | SVGs and text | Button icons as trusted inline SVG markup, text symbols or empty strings |
 | `theme` | `{}` | CSS custom-property overrides without the `--tb-` prefix |
 | `css` | Stylesheet dependency | Replace or extend the styling through `ccm.load` |
+| `ui` | Bundled `ccm-ui` 1.0.0 | HTML templates, trusted SVG interpolation and declarative event binding |
+| `views` | Inline Element factories | Templates for the shell, team, member, free seat, button, image and editor; partial overrides are merged |
 | `refreshInterval` | `30000` | Background reconciliation interval in milliseconds when observation is enabled; `0` disables the timer |
 | `retryLimit` | `12` | Maximum conditional-write attempts per action, including the initial attempt |
 | `onchange` | Not set | Callback after a successful local join, leave or rename action |
@@ -87,8 +90,9 @@ area and the team formation is read-only.
 Every property, including nested permissions, icons and labels, is documented
 directly in the component's `config`. It also describes team override fields,
 theme keys, units, placeholders and optional callback arguments. Partial overrides
-are supported for `labels`, `icons` and `theme`. Functions are needed only for the
-optional callbacks.
+are supported for `labels`, `icons`, `theme` and `views`. Functions are needed for
+optional callbacks and custom templates; ordinary text, icon and theme changes use
+plain configuration values.
 
 ```js
 {
@@ -337,7 +341,8 @@ main flows:
 | Incoming changes | `scheduleRefresh()` → `refresh()` → `render()`; the datastore remains authoritative |
 | User actions | `join()` / `leave()` / `rename()` → `mutate()` → `applyAction()` → conditional write |
 | Domain rules | `teamsFor()`, `memberTeam()`, `teamName()` and `applyAction()` derive team slots and enforce membership rules without I/O |
-| Rendering | `createTeamView()` creates references; `renderTeam()` and `renderMember()` patch them; `reconcileChildren()` retains and orders nodes |
+| Templates | `config.views` defines HTML; `createView()` creates a view record with cached `data-ref` elements and binds its `data-on-*` events once |
+| Rendering | `render()` reuses records from `teamViews` / `memberViews`; `renderTeam()` and `renderMember()` patch them; `reconcileChildren()` retains and orders nodes |
 | Shared access | `localTransaction()` serializes local writes; `observeStore()` distributes callbacks and restores them on cleanup |
 
 `state` holds the latest accepted dataset. The saved `revision` counts changes;
@@ -365,3 +370,144 @@ content width. Each embedded instance responds independently of the viewport.
 named configuration examples; [index.html](index.html) loads the demo through CCM.
 The `libs/` directory contains bundled dependencies. Component behavior belongs in
 the component source; presentation defaults belong in the stylesheet and `config`.
+
+## HTML templates
+
+`libs/ccm-ui/` includes `ccm-ui-1.0.0.min.mjs`, its source map and its MIT license,
+using the same versioned distribution as the User component. `config.ui` loads the
+module through CCM. The default templates are kept in `config.views` in the
+component file. Every factory receives the instance as `app` and returns one fresh
+detached Element synchronously through `app.ui.html`. Do not return a Promise,
+multiple roots or a previously used element. Ordinary label, icon and color changes
+belong in `labels`, `icons` and `theme`; override a template to change its markup.
+
+### Creation and updates
+
+The component uses two separate operations:
+
+1. `createView(name, data, required)` calls the factory, finds the required
+   `data-ref` descendants and binds `data-on-*` events. Its result is a view record
+   such as `{ root, title, list, ... }` containing references to actual DOM elements.
+2. The internal `render()` reuses these records and calls `renderTeam()`,
+   `renderMember()` and `updateButton()`. These functions compare current values
+   before writing text, attributes or properties. `reconcileChildren()` inserts,
+   removes or moves existing elements to match the required child order.
+
+`ccm-ui` supplies HTML creation and event binding; the component implements the
+incremental updates. In particular, `ui.render(content, target)` replaces the
+target's children. It is used to mount the shell, install a newly opened editor
+form and replace changed icon content. The internal `render()` never uses it to
+replace the team grid.
+
+The shell is created on the first `start()`. Cards are cached by team number;
+member rows are cached globally by `realm:key`, allowing the same row and avatar
+to move between teams. Each card retains its buttons and free seats. Cards and
+member rows absent from the complete visible team list are released; a later
+reappearance creates a new view. Optional badges and edit buttons stay cached
+while detached from a retained card. A changed valid picture URL creates a new
+image, while an unchanged URL preserves the existing image. The editor form is
+created on each opening inside the persistent dialog; incoming updates leave its
+draft value intact. Calling `start()` again refreshes
+the existing UI rather than rebuilding its templates.
+
+For example, a remote rename follows this path:
+
+```text
+notification → scheduleRefresh() → refresh() → full store.get(data.key)
+             → validate and accept state → render()
+             → reuse teamViews.get(number) → renderTeam(view, latestTeam, ...)
+             → setProperty(view.title, "textContent", latestTeam.name)
+```
+
+This updates the existing title without calling the team factory or rebinding its
+buttons. A team switch similarly moves the existing member row. All visible teams
+and members are still scanned, even when no DOM value changes. Changes to login,
+connection, busy or stale state also trigger `render()` without new team data.
+
+Template interpolations run **only at creation**. For example, a custom
+`${member.name}` outside the managed `name` anchor would become stale after a
+metadata change. Use the existing anchors for dynamic content. Adding a new
+dynamic field requires a corresponding update in the relevant render function;
+there is no automatic binding between interpolations and later snapshots.
+
+### Template contract
+
+| Factory | Second argument | Required descendant `data-ref` anchors |
+| --- | --- | --- |
+| `main(app)` | None | `content`, `grid`, `status`, `dialog`, `sync`, `syncMode`, `teamCount`, `teamLabel`, `peopleCount`, `peopleLabel`; also `user` when authentication is configured |
+| `team(app, { number })` | Stable 1-based team number | `top`, `caption`, `badge`, `heading`, `title`, `list`, `empty`, `emptyText`, `emptyHint`, `footer` |
+| `member(app, member)` | Public member snapshot | `avatar`, `name`, `you` |
+| `seat(app)` | None | `label` |
+| `button(app)` | None | `icon`, `label` |
+| `image(app)` | None | None; return an `img` element |
+| `editor(app, team)` | Current visible-team descriptor | `name`, `error`, `actions` |
+
+Treat the second argument as read-only. A member has `id`, `name` and optional
+`picture`; the editor's team has `number`, resolved `name`, `members`, `editable`,
+`joinable` and `leavable`. These arguments may reference accepted state; factories
+create DOM elements and must not change membership or saved metadata.
+
+Each required anchor must occur exactly once inside its view. Missing or duplicate
+anchors produce a descriptive error. Names are scoped to the view, so `name` in a
+member and `name` in the editor do not conflict. The root itself is not searched
+for anchors. References are captured before optional elements are detached; keep
+all required anchors in the initial template, even an initially hidden `badge` or
+`you` marker. The renderer decides when to attach them.
+
+The element types and nesting below are part of the contract, but are not checked
+by anchor validation. Keep the default semantic elements, including the `dialog`,
+editor `form` and input, buttons and list items, together with their accessibility
+attributes.
+
+- The renderer owns these entire direct child lists: `grid` contains team cards;
+  each card contains `top`, `heading`, `list` or `empty`, and `footer`; `top` contains
+  `caption` and the optional `badge`; `heading` contains `title` and the optional
+  edit button; `list` contains member and seat rows; a member row contains `avatar`,
+  `name` and the optional `you` marker. Extra children or wrappers in these lists
+  are removed by `reconcileChildren()`, including whitespace text nodes.
+- Text anchors such as `title`, `name` and `label` receive `textContent` updates;
+  nested markup inside them is replaced. A button's `icon` contents are replaced
+  when its configured icon changes. Keep member `avatar` anchors empty initially:
+  the component inserts initials and an optional image.
+- Keep `grid`, `user`, `footer`, `dialog` and editor `actions` empty for
+  component-owned content. The refresh button is appended to `sync`. Static
+  additions may live in unmodified areas such as inside `empty`, alongside its
+  retained text anchors. Preserve the standard CSS classes with the bundled
+  stylesheet; additional card and button classes are retained.
+
+Keep `data-on-click="action"` on button roots. It binds to `instance.events.action`
+once; the handler reads the current `data-action` and nearest card's `data-team`.
+For example, a retained switch button becomes a leave button through
+`updateButton()` without changing its listener. The component assigns these data
+attributes; keep team actions inside their card. The editor form uses
+`data-on-submit="saveName"` (including Enter submission); the dialog uses
+`data-on-cancel="cancelEditor"` and `data-on-close="closedEditor"`; avatar images
+use `data-on-error="imageError"`. Save remains a native submit button.
+
+`createView()` binds each new view before it is inserted. The User host is inserted
+after the shell is bound, keeping its own handlers independent. Do not rebind the
+whole shell on refresh or replace `instance.events`: existing views keep their
+bindings. Use `data-ref` for cached element references and `data-on-*` for events;
+neither makes template text reactive.
+
+### Overriding a template
+
+For example, replace only the free-seat template:
+
+```js
+views: {
+  seat: app => app.ui.html`
+    <li class="member member-empty">
+      <span class="avatar" aria-hidden="true">○</span>
+      <span class="member-name" data-ref="label"></span>
+    </li>
+  `
+}
+```
+
+Alternatively, load a module with the matching named exports using
+`views: ["ccm.load", "./resources/my-views.mjs"]`. Omitted factories retain their
+defaults. Supply overrides when creating the instance; replacing a factory later
+does not rebuild existing views, even after `start()` or `refresh()`. Normal
+interpolations escape text and quoted attributes. `ui.raw()` is reserved for trusted
+configuration SVGs, never team names or other user input.
