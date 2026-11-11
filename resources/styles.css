@@ -10,10 +10,12 @@
   --tb-border: #dde4dc;
   --tb-radius: 20px;
   --tb-font: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  /* Each instance responds to its own available content width, including in narrow embeds. */
+  container: teambuild / inline-size;
   box-sizing: border-box;
   max-width: 1240px;
   margin: 0 auto;
-  padding: clamp(20px, 4vw, 52px);
+  padding: clamp(20px, 4%, 52px);
   background: var(--tb-background);
   color: var(--tb-text);
   font: 15px/1.55 var(--tb-font);
@@ -77,7 +79,8 @@
   .card-footer { margin-top: auto; display: flex; flex-direction: column; gap: 9px; }
 
   .button {
-    display: inline-flex; align-items: center; justify-content: center; gap: 8px; min-height: 42px; padding: 10px 15px; border: 1px solid transparent; border-radius: 10px; color: var(--tb-text); background: transparent; font: 600 12px/1.3 var(--tb-font); cursor: pointer; transition: background .15s, border-color .15s;
+    /* Apply state colors immediately, without motion or a preference-dependent media query. */
+    display: inline-flex; align-items: center; justify-content: center; gap: 8px; min-height: 42px; padding: 10px 15px; border: 1px solid transparent; border-radius: 10px; color: var(--tb-text); background: transparent; font: 600 12px/1.3 var(--tb-font); cursor: pointer;
     &.primary {
       background: var(--tb-accent); color: #fff;
       &:hover:not(:disabled) { background: var(--tb-accent-hover); }
@@ -115,8 +118,8 @@
   .editor-error { font-size: 12px; min-height: 18px; }
   .editor-actions { display: flex; justify-content: flex-end; gap: 9px; }
 
-  /* Compact toolbar on narrow screens; action labels and keyboard focus remain accessible. */
-  @media (max-width: 620px) {
+  /* Compact toolbar in narrow instances; the embedding page's viewport is irrelevant. */
+  @container teambuild (max-width: 620px) {
     .toolbar { gap: 12px; }
     .user-area { margin-left: auto; }
     .sync-mode { display: none; }
@@ -127,5 +130,4 @@
     }
     .sync .button { padding: 10px; }
   }
-  @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
 }

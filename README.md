@@ -358,7 +358,10 @@ It does not authenticate, lock or save; embedding applications should normally u
 the instance methods for those responsibilities.
 
 [resources/styles.css](resources/styles.css) groups styles by the toolbar, cards,
-members, buttons and editor. [resources/configs.mjs](resources/configs.mjs) contains
+members, buttons and editor. Native CSS nesting scopes these rules to `.teambuild`;
+the named `teambuild` container switches to a compact toolbar at 620 px of available
+content width. Each embedded instance responds independently of the viewport.
+[resources/configs.mjs](resources/configs.mjs) contains
 named configuration examples; [index.html](index.html) loads the demo through CCM.
 The `libs/` directory contains bundled dependencies. Component behavior belongs in
 the component source; presentation defaults belong in the stylesheet and `config`.
