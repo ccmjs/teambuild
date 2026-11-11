@@ -2,8 +2,8 @@
  * Collaborative team formation with conditional writes and optional live updates.
  *
  * File guide: config describes the public options; Instance owns lifecycle, reads,
- * writes and DOM views. config.views creates markup; Instance's render() patches it.
- * The exported domain helpers below it apply rules without I/O.
+ * writes and DOM updates. resources/views.mjs creates markup; Instance's render() patches it.
+ * resources/content.mjs supplies labels and icons. Domain helpers below Instance apply rules without I/O.
  * Local locking and shared datastore subscriptions are handled at the end of the file.
  * A notification requests a full read; only the resulting DOM changes are incremental.
  *
@@ -24,72 +24,12 @@ export const component = {
     ui: ["ccm.load", "././libs/ccm-ui/ccm-ui-1.0.0.min.mjs"],
 
     /**
-     * Synchronous Element factories: return one fresh, detached root for each newly needed view.
-     * Interpolations run only at creation; renderTeam/renderMember/updateButton own later changes.
-     * A custom interpolation is not reactive: dynamic text must use an anchor patched by the renderer.
-     * Partial overrides are merged; a module of factories may also be supplied through ccm.load.
-     * Each factory receives this instance as app and returns one fresh Element via app.ui.html.
-     * Treat the optional second argument as read-only; member metadata may reference the accepted state.
-     * data-ref names are local to each view; createView caches these descendant references once.
-     * Preserve the managed child lists and data-on-* actions documented in README's HTML templates section.
-     * Templates are trusted configuration; interpolate user text normally and reserve ui.raw for trusted icons.
+     * HTML template module with named Element factories (see resources/views.mjs and README).
+     * May also be a plain object or another ccm.load module overriding individual factories.
+     * init() loads omitted factories from the default module; supplied overrides take precedence.
+     * Templates run only for new views; retained elements are patched by the component's render functions.
      */
-    views: {
-      /** Persistent shell. Keep user empty: its child component is inserted after our events are bound. */
-      main: app => app.ui.html`
-        <section class="teambuild">
-          <div class="content" data-ref="content">
-            <div class="toolbar">
-              <div class="totals">
-                <span class="stat"><strong data-ref="teamCount"></strong><span data-ref="teamLabel"></span></span>
-                <span class="stat"><strong data-ref="peopleCount"></strong><span data-ref="peopleLabel"></span></span>
-              </div>
-              <div class="sync" data-ref="sync"><span class="sync-mode" data-ref="syncMode"></span></div>
-              ${app.user ? app.ui.html`<div class="user-area" data-ref="user"></div>` : null}
-            </div>
-            <div class="teams" data-ref="grid"></div>
-          </div>
-          <p class="status" data-ref="status" role="status" aria-live="polite" aria-atomic="true">${app.labels.loading}</p>
-          <dialog class="editor" data-ref="dialog" aria-label="${app.labels.editTitle}"
-                  data-on-cancel="cancelEditor" data-on-close="closedEditor"></dialog>
-        </section>
-      `,
-      /** Team card for a stable 1-based number; live name, rules and members are supplied by renderTeam. */
-      team: (app, { number }) => app.ui.html`
-        <article class="team-card" data-team="${number}">
-          <div class="card-top" data-ref="top"><span class="team-number" data-ref="caption"></span><span class="badge" data-ref="badge"></span></div>
-          <div class="team-heading" data-ref="heading"><h2 data-ref="title"></h2></div>
-          <ul class="members" data-ref="list"></ul>
-          <div class="empty-state" data-ref="empty">
-            <span class="empty-symbol">+</span><p data-ref="emptyText"></p><p class="empty-hint" data-ref="emptyHint"></p>
-          </div>
-          <div class="card-footer" data-ref="footer"></div>
-        </article>
-      `,
-      /** Real member row; Member is a creation-time public snapshot. renderMember patches later metadata. */
-      member: (app, member) => app.ui.html`
-        <li class="member" data-member="${member.id}"><span class="avatar" data-ref="avatar" aria-hidden="true"></span><span class="member-name" data-ref="name"></span><span class="you" data-ref="you"></span></li>
-      `,
-      /** Presentation-only free seat. The label is patched when labels.emptyMember changes. */
-      seat: app => app.ui.html`
-        <li class="member member-empty"><span class="avatar" aria-hidden="true">+</span><span class="member-name" data-ref="label"></span></li>
-      `,
-      /** Shared button. The current data-action determines its behavior; icon and label are patched independently. */
-      button: app => app.ui.html`
-        <button type="button" class="button" data-on-click="action"><span class="icon" data-ref="icon" aria-hidden="true"></span><span data-ref="label"></span></button>
-      `,
-      /** New image for a changed, valid picture URL; an unchanged URL preserves the existing image. */
-      image: app => app.ui.html`<img alt="" loading="lazy" referrerpolicy="no-referrer" data-on-error="imageError">`,
-      /** Fresh rename form per opening; second argument is the current visible-team descriptor. */
-      editor: (app, team) => app.ui.html`
-        <form data-on-submit="saveName">
-          <h2>${app.labels.editTitle}</h2><p class="editor-hint">${app.labels.editHint}</p>
-          <label class="name-label">${app.labels.name}<input data-ref="name" name="name" value="${team.name}" required maxlength="${app.nameMaxLength}"></label>
-          <p class="editor-error" data-ref="error" role="alert"></p>
-          <div class="editor-actions" data-ref="actions"></div>
-        </form>
-      `,
-    },
+    views: ["ccm.load", "././resources/views.mjs"],
 
     /** Shared dataset containing all teams and members of one formation. */
     data: {
@@ -199,121 +139,20 @@ export const component = {
      */
     theme: {},
 
-    /** Button icons as trusted inline SVG markup, plain text symbols or an empty string; partial overrides are merged. */
-    icons: {
-      /** Icon for joining a team when the user has no current team. */
-      join: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 5v14M5 12h14"/></svg>',
-      /** Icon for leaving the user's current team. */
-      leave: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M9 4H4v16h5m2-8h10m-4-4 4 4-4 4"/></svg>',
-      /** Icon for switching directly from the current team to another team. */
-      switch: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 8h16m-4-4 4 4-4 4M20 16H4m4-4-4 4 4 4"/></svg>',
-      /** Icon for opening the team-name editor; displayed only to members allowed to rename their team. */
-      edit: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="m15 5 4 4M4 20l5-1L20 8a3 3 0 0 0-4-4L5 15z"/></svg>',
-      /** Refresh/reconnect icon; shown without visible text while live updates work. Empty keeps the text visible. */
-      refresh: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M20 7v5h-5M4 17v-5h5M5 8a8 8 0 0 1 13-3l2 7M4 12l2 7a8 8 0 0 0 13-3"/></svg>',
-      /** Icon for saving a team name in the editor. */
-      save: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="m5 12 4 4L19 6"/></svg>',
-      /** Icon for dismissing the team-name editor without saving. */
-      cancel: "×",
-    },
+    /**
+     * Button icons from content.mjs: trusted SVG markup, text symbols or empty strings.
+     * Accepts a ccm.load dependency or a plain object; partial overrides are merged with the defaults.
+     * Each icon's purpose is documented beside its default value in resources/content.mjs.
+     */
+    icons: ["ccm.load", "././resources/content.mjs#icons"],
 
-    /** Interface text, accessible button names and messages. Defaults are German; partial overrides are merged. */
-    labels: {
-      /** Toolbar noun for zero or multiple occupied teams; empty team slots are not counted. */
-      teams: "Teams",
-      /** Toolbar noun for zero or multiple members; empty member slots are not counted. */
-      people: "Personen",
-      /** Toolbar noun for exactly one occupied team. */
-      oneTeam: "Team",
-      /** Toolbar noun for exactly one member. */
-      onePerson: "Person",
-      /** Fallback team name when neither a stored nor a preset name exists; {number} is the 1-based team number. */
-      team: "Team {number}",
-      /** Small caption above each team name; {number} is padded to at least two digits, e.g. 01. */
-      teamNumber: "TEAM {number}",
-      /** Badge identifying the signed-in user's current team. */
-      yourTeam: "Dein Team",
-      /** Marker next to the signed-in user's own member entry. */
-      you: "Du",
-      /** Main empty-state message for an empty team with unlimited capacity. */
-      empty: "Hier ist Platz für eure Ideen.",
-      /** Supporting invitation below the empty-state message for an unlimited team. */
-      emptyHint: "Sei die erste Person in diesem Team.",
-      /** Text for each unoccupied member slot when maxMembers is greater than zero. */
-      emptyMember: "Freier Platz",
-      /** Disabled join/switch button text when the team has reached maxMembers. */
-      full: "Team vollständig",
-      /** Disabled join/switch button text when joining is forbidden or the team is beyond maxTeams. */
-      closed: "Beitritt geschlossen",
-      /** Join button text for a signed-in user without a current team. */
-      join: "Beitreten",
-      /** Button text for leaving the user's current team. */
-      leave: "Team verlassen",
-      /** Button text for switching directly from the current team to another team. */
-      switch: "Hierhin wechseln",
-      /** Accessible name and tooltip of the icon button that opens the team-name editor. */
-      edit: "Teamname ändern",
-      /** Refresh/reconnect button text, accessible name and tooltip; visually hidden during confirmed live updates. */
-      refresh: "Aktualisieren",
-      /** Button text for saving the edited team name. */
-      save: "Speichern",
-      /** Button text for dismissing the team-name editor without saving. */
-      cancel: "Abbrechen",
-      /** Label of the team-name input field. */
-      name: "Teamname",
-      /** Heading and accessible dialog name of the team-name editor. */
-      editTitle: "Gebt eurem Team einen Namen.",
-      /** Explanation shown below the team-name editor heading. */
-      editHint: "Alle Mitglieder deines Teams können den Namen ändern.",
-      /** Toolbar status for server-confirmed live observation with a current dataset. */
-      live: "Automatische Updates",
-      /** Toolbar status when remote realtime observation is not configured. */
-      manual: "Stand manuell aktualisieren",
-      /** Toolbar status while establishing a live connection or waiting for subscription acknowledgement. */
-      connecting: "Live-Verbindung wird hergestellt …",
-      /** Toolbar status when live observation is unavailable or the latest dataset read failed. */
-      disconnected: "Live-Updates unterbrochen",
-      /** Initial status while loading the team formation. */
-      loading: "Teams werden geladen …",
-      /** Status while a join, leave, switch or rename action is being processed. */
-      saving: "Änderung wird gespeichert …",
-      /** Confirmation after a manual refresh or recovery from a failed read. */
-      refreshed: "Der Stand ist aktuell.",
-      /** Confirmation after joining or switching; {team} is the destination team's current display name. */
-      joined: "Du bist jetzt in {team}.",
-      /** Confirmation after leaving a team. */
-      left: "Du hast das Team verlassen.",
-      /** Confirmation after saving a team name. */
-      renamed: "Der Teamname wurde gespeichert.",
-      /** Fallback error when reading the dataset fails. */
-      loadFailed: "Der Stand konnte nicht geladen werden. Bitte aktualisiere die Ansicht.",
-      /** Fallback error when a write fails or its completion cannot be confirmed. */
-      saveFailed: "Die Speicherung konnte nicht bestätigt werden. Bitte aktualisiere den Stand vor einem neuen Versuch.",
-      /** Error when a remote write returns HTTP 400, indicating an unsupported conditional-write request. */
-      unsupported: "Der Server unterstützt noch keine sicheren bedingten Schreibzugriffe. Bitte aktualisiere ccm-server.",
-      /** Error when retryLimit is exhausted or another action is already running in this instance. */
-      conflict: "Es gab viele gleichzeitige Änderungen. Bitte versuche es erneut.",
-      /** Error when a team name changed after the user began editing; the local draft remains available. */
-      nameConflict: "Der Teamname wurde inzwischen geändert. Prüfe den aktuellen Namen und versuche es erneut.",
-      /** Error when the user's membership changed concurrently, for example in another browser tab. */
-      membershipConflict: "Deine Teamzuordnung wurde inzwischen geändert. Bitte prüfe den aktuellen Stand.",
-      /** Error when an action requires authentication or the signed-in identity changed before the write. */
-      loginRequired: "Bitte melde dich zuerst an.",
-      /** Error when team rules, switching settings or membership do not permit an action. */
-      forbidden: "Diese Änderung ist für dieses Team nicht freigegeben.",
-      /** Error when the target team is full when the action is applied to the latest dataset. */
-      teamFull: "Der letzte Platz wurde inzwischen vergeben. Bitte wähle ein anderes Team.",
-      /** Error when the requested team number is no longer an available team slot. */
-      teamMissing: "Dieser Teamplatz ist nicht mehr verfügbar.",
-      /** Error for a blank or overlong edited name; {max} is replaced with nameMaxLength. */
-      invalidName: "Bitte gib einen Namen mit 1 bis {max} Zeichen ein.",
-      /** Error for an unexpected dataset key, schema, team structure or duplicate member identity. */
-      invalidData: "Die gespeicherten Teambildungsdaten haben ein unbekanntes oder ungültiges Format.",
-      /** Error when a named local store cannot be protected by the browser's Web Locks API. */
-      localLock: "Dieser Browser unterstützt keine sicheren parallelen Änderungen an lokalen Daten.",
-      /** Error reported by the datastore when live observation fails, such as a rejected subscription. */
-      observeFailed: "Live-Updates sind unterbrochen. Du kannst den Stand jederzeit aktualisieren.",
-    },
+    /**
+     * Interface text, accessible names and messages from content.mjs; defaults are English.
+     * Select #labels.de for German. Accepts a ccm.load dependency or a plain object.
+     * Partial overrides are merged with the English defaults; both bundled language maps are complete.
+     * Individual labels and their placeholders are documented in resources/content.mjs.
+     */
+    labels: ["ccm.load", "././resources/content.mjs#labels.en"],
 
     /**
      * Optional callback after a successful action in this instance; incoming live updates do not invoke it.
@@ -353,10 +192,16 @@ export const component = {
     /** CCM init: normalize partial options and capture dependencies after CCM has resolved them. */
     this.init = async () => {
       // CCM replaces nested configuration objects; restore omitted labels, icons, views and data defaults.
-      this.labels = { ...component.config.labels, ...this.labels };
-      this.icons = { ...component.config.icons, ...this.icons };
-      this.views = { ...component.config.views, ...this.views };
-      for (const name of Object.keys(component.config.views))
+      // Resolve defaults even for partial overrides; dynamic imports reuse the cached content module.
+      // Fresh maps keep per-instance edits separate from other instances and the shared module exports.
+      const [labels, icons] = await this.ccm.load(component.config.labels[1], component.config.icons[1]);
+      this.labels = { ...labels, ...this.labels };
+      this.icons = { ...icons, ...this.icons };
+      const requiredViews = ["main", "team", "member", "seat", "button", "image", "editor"];
+      // CCM has already loaded a configured module. Only partial overrides need the default module as well.
+      if (requiredViews.some(name => this.views?.[name] === undefined))
+        this.views = { ...await this.ccm.load(component.config.views[1]), ...this.views };
+      for (const name of requiredViews)
         if (typeof this.views[name] !== "function") throw new Error(`views.${name} must be an Element factory.`);
       this.data = { key: component.config.data.key,
         permissions: structuredClone(component.config.data.permissions), ...this.data };

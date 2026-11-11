@@ -6,6 +6,8 @@
 
 /** Persistent shared demo with authentication and WebSocket observation through the local CCM server. */
 export const demo = {
+  /** Keep the demo in German; the component's default interface is English. */
+  labels: ["ccm.load", "././resources/content.mjs#labels.de"],
   maxMembers: 4,
   maxTeams: 6,
   teamNames: ["Ideenwerkstatt", "Perspektivwechsel", "Zukunftslabor"],

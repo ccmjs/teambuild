@@ -2,9 +2,11 @@
 
 A ccmjs v28 component for collaborative team formation, with optional authentication,
 configurable team rules, responsive team cards and safe concurrent updates.
-Component logic, HTML templates and incremental UI updates live in `ccm.teambuild.mjs`.
-The stylesheet and the bundled, versioned `ccm-ui` module are loaded through
-`ccm.load` dependencies. No build step is required.
+Component logic and incremental UI updates live in `ccm.teambuild.mjs`; HTML
+templates live in `resources/views.mjs`, and labels and icons in
+`resources/content.mjs`. These resources, the stylesheet and the bundled,
+versioned `ccm-ui` module are loaded through `ccm.load` dependencies. No build step
+is required.
 
 ## Embedding
 
@@ -37,7 +39,8 @@ accompanying extension in `ccm-server/lib/data.mjs` on the server. Unmodified cc
 v28 already forwards this option. The component never falls back to unconditional
 overwrites.
 
-`index.html` provides an interactive demo with the User component. Open the page
+`index.html` provides an interactive demo with German team-building labels and the
+User component. The component's default labels are English. Open the page
 through an HTTP server. Authentication and team data use the local CCM server at
 `http://localhost:8080`. Teams are stored in the `teambuild` datastore under the
 `demo` key and survive page reloads. WebSocket observation is enabled: joins,
@@ -76,23 +79,24 @@ area and the team formation is read-only.
 | `allowSwitch` | `true` | Direct team switching; checks both departure and joining rules |
 | `nameMaxLength` | `60` | Maximum length of an edited team name, using JavaScript string length |
 | `avatarSize` | `96` | Maximum thumbnail edge in pixels for a copied private profile upload |
-| `labels` | German text | Interface text, accessible names, hints and error messages |
-| `icons` | SVGs and text | Button icons as trusted inline SVG markup, text symbols or empty strings |
+| `labels` | `["ccm.load", "././resources/content.mjs#labels.en"]` | English interface text, accessible names, hints and error messages; use `#labels.de` for German; partial overrides are merged |
+| `icons` | `["ccm.load", "././resources/content.mjs#icons"]` | Button icons as trusted inline SVG markup, text symbols or empty strings; partial overrides are merged |
 | `theme` | `{}` | CSS custom-property overrides without the `--tb-` prefix |
 | `css` | Stylesheet dependency | Replace or extend the styling through `ccm.load` |
 | `ui` | Bundled `ccm-ui` 1.0.0 | HTML templates, trusted SVG interpolation and declarative event binding |
-| `views` | Inline Element factories | Templates for the shell, team, member, free seat, button, image and editor; partial overrides are merged |
+| `views` | `["ccm.load", "././resources/views.mjs"]` | Template module for the shell, team, member, free seat, button, image and editor; partial overrides are merged |
 | `refreshInterval` | `30000` | Background reconciliation interval in milliseconds when observation is enabled; `0` disables the timer |
 | `retryLimit` | `12` | Maximum conditional-write attempts per action, including the initial attempt |
 | `onchange` | Not set | Callback after a successful local join, leave or rename action |
 | `onerror` | Not set | Callback for loading, saving, observation, profile-image and extension errors |
 
-Every property, including nested permissions, icons and labels, is documented
-directly in the component's `config`. It also describes team override fields,
-theme keys, units, placeholders and optional callback arguments. Partial overrides
-are supported for `labels`, `icons`, `theme` and `views`. Functions are needed for
-optional callbacks and custom templates; ordinary text, icon and theme changes use
-plain configuration values.
+Every configuration property is documented in the component's `config`, including
+nested permissions, team override fields, theme keys, units and optional callback
+arguments. [resources/content.mjs](resources/content.mjs) documents each label,
+its placeholders and each icon beside its default value. Partial overrides are
+supported for `labels`, `icons`, `theme` and `views`. Functions are needed for
+optional callbacks and custom templates; ordinary text, icon and theme changes
+use plain configuration values.
 
 ```js
 {
@@ -101,6 +105,21 @@ plain configuration values.
   theme: { accent: "#6045a0", "accent-hover": "#49327f", radius: "14px" }
 }
 ```
+
+`content.mjs` exports complete language maps as `labels.en` and `labels.de`, plus
+the shared `icons` object. The component defaults to English; the demo explicitly
+selects German:
+
+```js
+labels: ["ccm.load", "././resources/content.mjs#labels.de"]
+```
+
+A custom content module may export a flat label map and icons, loaded through
+`labels: ["ccm.load", "./resources/my-content.mjs#labels"]` and
+`icons: ["ccm.load", "./resources/my-content.mjs#icons"]`. In `init()`, omitted entries
+are filled from the English labels and default icons. Supplied values take
+precedence, including empty strings. Each instance receives independent label and icon maps.
+The browser reuses the imported module; content is not loaded during UI updates.
 
 Additional theme keys are `background`, `surface`, `text`, `muted`, `border` and
 `font`. Supported label placeholders are `{number}` in `team` and `teamNumber`,
@@ -341,7 +360,7 @@ main flows:
 | Incoming changes | `scheduleRefresh()` → `refresh()` → `render()`; the datastore remains authoritative |
 | User actions | `join()` / `leave()` / `rename()` → `mutate()` → `applyAction()` → conditional write |
 | Domain rules | `teamsFor()`, `memberTeam()`, `teamName()` and `applyAction()` derive team slots and enforce membership rules without I/O |
-| Templates | `config.views` defines HTML; `createView()` creates a view record with cached `data-ref` elements and binds its `data-on-*` events once |
+| Templates | `resources/views.mjs` exports HTML factories loaded through `config.views`; `createView()` caches their `data-ref` elements and binds their `data-on-*` events once |
 | Rendering | `render()` reuses records from `teamViews` / `memberViews`; `renderTeam()` and `renderMember()` patch them; `reconcileChildren()` retains and orders nodes |
 | Shared access | `localTransaction()` serializes local writes; `observeStore()` distributes callbacks and restores them on cleanup |
 
@@ -369,15 +388,18 @@ content width. Each embedded instance responds independently of the viewport.
 [resources/configs.mjs](resources/configs.mjs) contains
 named configuration examples; [index.html](index.html) loads the demo through CCM.
 The `libs/` directory contains bundled dependencies. Component behavior belongs in
-the component source; presentation defaults belong in the stylesheet and `config`.
+the component source, HTML structure in `resources/views.mjs`, styling in the
+stylesheet, text and icons in `resources/content.mjs`, and theme overrides in
+`config.theme`.
 
 ## HTML templates
 
 `libs/ccm-ui/` includes `ccm-ui-1.0.0.min.mjs`, its source map and its MIT license,
 using the same versioned distribution as the User component. `config.ui` loads the
-module through CCM. The default templates are kept in `config.views` in the
-component file. Every factory receives the instance as `app` and returns one fresh
-detached Element synchronously through `app.ui.html`. Do not return a Promise,
+module through CCM. `config.views` loads [resources/views.mjs](resources/views.mjs),
+which exports each default factory by name. Every factory receives the instance
+as `app` and returns one fresh detached Element synchronously through `app.ui.html`.
+Do not return a Promise,
 multiple roots or a previously used element. Ordinary label, icon and color changes
 belong in `labels`, `icons` and `theme`; override a template to change its markup.
 
@@ -507,7 +529,10 @@ views: {
 
 Alternatively, load a module with the matching named exports using
 `views: ["ccm.load", "./resources/my-views.mjs"]`. Omitted factories retain their
-defaults. Supply overrides when creating the instance; replacing a factory later
+defaults: `init()` loads the standard module through `ccm.load` when a supplied
+object or module is incomplete, then merges the overrides over those defaults.
+The normal default configuration and complete custom modules need no extra load.
+Supply overrides when creating the instance; replacing a factory later
 does not rebuild existing views, even after `start()` or `refresh()`. Normal
 interpolations escape text and quoted attributes. `ui.raw()` is reserved for trusted
 configuration SVGs, never team names or other user input.
