@@ -9,73 +9,248 @@
 export const component = {
   name: "teambuild",
   ccm: "././libs/framework/ccm-28.0.0.min.js",
+  /** Default instance configuration. Optional dependencies and callbacks are shown as commented examples. */
   config: {
+    /** Stylesheet dependency loaded by CCM; replace or extend it to customize the instance's appearance. */
     css: ["ccm.load", "././resources/styles.css"],
-    /** One dataset per formation. Remote writes require ccm-server's options.ifMatch support. */
+
+    /** Shared dataset containing all teams and members of one formation. */
     data: {
+      /**
+       * CCM datastore dependency or an existing datastore accessor. The default uses in-memory storage.
+       * A store with name only uses IndexedDB; name plus url uses the remote CCM server.
+       * For realtime updates, add observe: { key: <data.key> } to the remote store configuration.
+       * Example: ["ccm.store", { name: "teambuild", url: "https://example.org/api", observe: { key: "teambuild" } }].
+       * Remote writes require the server's options.ifMatch support to prevent lost concurrent changes.
+       */
       store: ["ccm.store"],
+      /** Dataset key shared by all participants; a CCM key string or a compound key array. */
       key: "teambuild",
-      /** Applied only on creation; pre-create the dataset to make the teacher its owner. */
-      permissions: { access: { get: "all", set: "realm", del: "owner" } },
+      /**
+       * Metadata copied into the dataset's _ property only when the first participant creates it.
+       * The component sets owner to that participant's realm:key; existing permissions are preserved.
+       * Pre-create the dataset as a teacher to retain ownership. null omits this metadata on creation.
+       */
+      permissions: {
+        /** Server-enforced access rules for the entire dataset; independent of the team UI rules below. */
+        access: {
+          /** Anyone, including signed-out visitors, may read the team formation. */
+          get: "all",
+          /** Authenticated users in the owner's realm may update the dataset. */
+          set: "realm",
+          /** Only the dataset owner may delete it. */
+          del: "owner",
+        },
+      },
     },
+
+    /**
+     * Optional CCM User instance; renders its own login/profile/logout controls in the top-right toolbar.
+     * Omit it for read-only viewing. With a User instance, participants must sign in before changing teams.
+     * Pass User-specific options such as url, realm and registration in the dependency's third argument.
+     * Display names and available profile pictures are copied into member records when joining or switching.
+     */
     // user: ["ccm.instance", "././libs/user/ccm.user-1.0.0.min.mjs"],
-    /** Zero means unlimited. Existing members are never removed when a limit is reduced. */
+
+    /** Maximum members per team: a non-negative integer; 0 means unlimited. Lowering it never removes members. */
     maxMembers: 0,
+
+    /** Maximum number of teams: a non-negative integer; 0 means unlimited. Lowering it retains occupied teams. */
     maxTeams: 0,
+
+    /**
+     * Preset team names as a string array; index 0 names team 1. Missing entries use labels.team.
+     * Stored member-chosen names take precedence. Preset names alone do not create additional team cards.
+     */
     teamNames: [],
+
+    /** Whether members may rename their own team; does not control joining or leaving. Overridable per team. */
     editable: true,
+
+    /** Whether signed-in users may join teams, including the trailing empty team. Overridable per team. */
     joinable: true,
+
+    /** Whether members may leave their current team. Overridable per team. */
     leavable: true,
-    /** Index 0 overrides team 1. Omitted flags inherit their global setting. */
+
+    /**
+     * Per-team rule objects; index 0 applies to team 1. Explicit booleans override the global flags:
+     * - editable: allow this team's members to rename it.
+     * - joinable: allow joining this team.
+     * - leavable: allow leaving this team.
+     * Omitted flags inherit their global values. Example: [{ joinable: true, leavable: true }].
+     * These are UI rules; server-side write permissions are configured separately in data.permissions.
+     */
     teamOverrides: [],
+
+    /**
+     * Allow a direct team switch, saved as one atomic change. Requires leavable on the current team
+     * and joinable plus a free seat on the target team. false requires leaving before joining another team.
+     */
     allowSwitch: true,
+
+    /** Maximum length of a trimmed, edited team name, using JavaScript string length; a positive integer. */
     nameMaxLength: 60,
-    /** Maximum edge in pixels for the shared thumbnail of a private uploaded profile picture. */
+
+    /**
+     * Maximum thumbnail edge in pixels for a private CCM profile upload copied into a member record.
+     * A positive integer; aspect ratio is preserved and smaller images are not enlarged.
+     */
     avatarSize: 96,
-    /** Background reconciliation when observe is enabled, including after a missed WebSocket event. */
+
+    /**
+     * Background reconciliation interval in milliseconds when datastore observation is enabled.
+     * A non-negative integer; 0 disables the timer. WebSocket, focus and online events still trigger refreshes.
+     * The timer reloads missed changes and attempts to reconnect observation while the page is visible.
+     */
     refreshInterval: 30000,
+
+    /**
+     * Maximum conditional-write attempts per action, including the first attempt; a positive integer.
+     * After HTTP 409, the component rereads the dataset and revalidates the action before retrying.
+     */
     retryLimit: 12,
-    /** CSS custom properties without the --tb- prefix, e.g. { accent: '#6d28d9' }. */
+
+    /**
+     * CSS custom-property overrides, omitting the --tb- prefix. An empty object uses the stylesheet defaults.
+     * Supported keys in the supplied stylesheet:
+     * - accent: primary buttons, live indicator and own-team border; accent-hover: primary button hover color.
+     * - background: component and input background; surface: cards, dialogs and secondary buttons.
+     * - text: main text color; muted: secondary text color; border: neutral borders and separators.
+     * - radius: card/dialog/component corner radius with a CSS unit; font: CSS font-family value.
+     * Example: { accent: "#6d28d9", radius: "14px" }. Partial overrides are supported.
+     */
     theme: {},
-    /** Icons may be trusted SVG markup, a text symbol, or an empty string. */
+
+    /** Button icons as trusted inline SVG markup, plain text symbols or an empty string; partial overrides are merged. */
     icons: {
+      /** Icon for joining a team when the user has no current team. */
       join: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 5v14M5 12h14"/></svg>',
+      /** Icon for leaving the user's current team. */
       leave: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M9 4H4v16h5m2-8h10m-4-4 4 4-4 4"/></svg>',
+      /** Icon for switching directly from the current team to another team. */
       switch: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 8h16m-4-4 4 4-4 4M20 16H4m4-4-4 4 4 4"/></svg>',
+      /** Icon for opening the team-name editor; displayed only to members allowed to rename their team. */
       edit: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="m15 5 4 4M4 20l5-1L20 8a3 3 0 0 0-4-4L5 15z"/></svg>',
+      /** Refresh/reconnect icon; shown without visible text while live updates work. Empty keeps the text visible. */
       refresh: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M20 7v5h-5M4 17v-5h5M5 8a8 8 0 0 1 13-3l2 7M4 12l2 7a8 8 0 0 0 13-3"/></svg>',
+      /** Icon for saving a team name in the editor. */
       save: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="m5 12 4 4L19 6"/></svg>',
+      /** Icon for dismissing the team-name editor without saving. */
       cancel: "×",
     },
+
+    /** Interface text, accessible button names and messages. Defaults are German; partial overrides are merged. */
     labels: {
-      teams: "Teams", people: "Personen", oneTeam: "Team", onePerson: "Person", team: "Team {number}",
-      teamNumber: "TEAM {number}", yourTeam: "Dein Team", you: "Du",
-      empty: "Hier ist Platz für eure Ideen.", emptyHint: "Sei die erste Person in diesem Team.",
-      emptyMember: "Freier Platz", full: "Team vollständig", closed: "Beitritt geschlossen",
-      join: "Beitreten", leave: "Team verlassen", switch: "Hierhin wechseln",
-      edit: "Teamname ändern", refresh: "Aktualisieren", save: "Speichern", cancel: "Abbrechen",
-      name: "Teamname", editTitle: "Gebt eurem Team einen Namen.",
+      /** Toolbar noun for zero or multiple occupied teams; empty team slots are not counted. */
+      teams: "Teams",
+      /** Toolbar noun for zero or multiple members; empty member slots are not counted. */
+      people: "Personen",
+      /** Toolbar noun for exactly one occupied team. */
+      oneTeam: "Team",
+      /** Toolbar noun for exactly one member. */
+      onePerson: "Person",
+      /** Fallback team name when neither a stored nor a preset name exists; {number} is the 1-based team number. */
+      team: "Team {number}",
+      /** Small caption above each team name; {number} is padded to at least two digits, e.g. 01. */
+      teamNumber: "TEAM {number}",
+      /** Badge identifying the signed-in user's current team. */
+      yourTeam: "Dein Team",
+      /** Marker next to the signed-in user's own member entry. */
+      you: "Du",
+      /** Main empty-state message for an empty team with unlimited capacity. */
+      empty: "Hier ist Platz für eure Ideen.",
+      /** Supporting invitation below the empty-state message for an unlimited team. */
+      emptyHint: "Sei die erste Person in diesem Team.",
+      /** Text for each unoccupied member slot when maxMembers is greater than zero. */
+      emptyMember: "Freier Platz",
+      /** Disabled join/switch button text when the team has reached maxMembers. */
+      full: "Team vollständig",
+      /** Disabled join/switch button text when joining is forbidden or the team is beyond maxTeams. */
+      closed: "Beitritt geschlossen",
+      /** Join button text for a signed-in user without a current team. */
+      join: "Beitreten",
+      /** Button text for leaving the user's current team. */
+      leave: "Team verlassen",
+      /** Button text for switching directly from the current team to another team. */
+      switch: "Hierhin wechseln",
+      /** Accessible name and tooltip of the icon button that opens the team-name editor. */
+      edit: "Teamname ändern",
+      /** Refresh/reconnect button text, accessible name and tooltip; visually hidden during confirmed live updates. */
+      refresh: "Aktualisieren",
+      /** Button text for saving the edited team name. */
+      save: "Speichern",
+      /** Button text for dismissing the team-name editor without saving. */
+      cancel: "Abbrechen",
+      /** Label of the team-name input field. */
+      name: "Teamname",
+      /** Heading and accessible dialog name of the team-name editor. */
+      editTitle: "Gebt eurem Team einen Namen.",
+      /** Explanation shown below the team-name editor heading. */
       editHint: "Alle Mitglieder deines Teams können den Namen ändern.",
-      live: "Automatische Updates", manual: "Stand manuell aktualisieren",
-      connecting: "Live-Verbindung wird hergestellt …", disconnected: "Live-Updates unterbrochen",
-      loading: "Teams werden geladen …", saving: "Änderung wird gespeichert …",
-      refreshed: "Der Stand ist aktuell.", joined: "Du bist jetzt in {team}.",
-      left: "Du hast das Team verlassen.", renamed: "Der Teamname wurde gespeichert.",
+      /** Toolbar status for server-confirmed live observation with a current dataset. */
+      live: "Automatische Updates",
+      /** Toolbar status when remote realtime observation is not configured. */
+      manual: "Stand manuell aktualisieren",
+      /** Toolbar status while establishing a live connection or waiting for subscription acknowledgement. */
+      connecting: "Live-Verbindung wird hergestellt …",
+      /** Toolbar status when live observation is unavailable or the latest dataset read failed. */
+      disconnected: "Live-Updates unterbrochen",
+      /** Initial status while loading the team formation. */
+      loading: "Teams werden geladen …",
+      /** Status while a join, leave, switch or rename action is being processed. */
+      saving: "Änderung wird gespeichert …",
+      /** Confirmation after a manual refresh or recovery from a failed read. */
+      refreshed: "Der Stand ist aktuell.",
+      /** Confirmation after joining or switching; {team} is the destination team's current display name. */
+      joined: "Du bist jetzt in {team}.",
+      /** Confirmation after leaving a team. */
+      left: "Du hast das Team verlassen.",
+      /** Confirmation after saving a team name. */
+      renamed: "Der Teamname wurde gespeichert.",
+      /** Fallback error when reading the dataset fails. */
       loadFailed: "Der Stand konnte nicht geladen werden. Bitte aktualisiere die Ansicht.",
+      /** Fallback error when a write fails or its completion cannot be confirmed. */
       saveFailed: "Die Speicherung konnte nicht bestätigt werden. Bitte aktualisiere den Stand vor einem neuen Versuch.",
+      /** Error when a remote write returns HTTP 400, indicating an unsupported conditional-write request. */
       unsupported: "Der Server unterstützt noch keine sicheren bedingten Schreibzugriffe. Bitte aktualisiere ccm-server.",
+      /** Error when retryLimit is exhausted or another action is already running in this instance. */
       conflict: "Es gab viele gleichzeitige Änderungen. Bitte versuche es erneut.",
+      /** Error when a team name changed after the user began editing; the local draft remains available. */
       nameConflict: "Der Teamname wurde inzwischen geändert. Prüfe den aktuellen Namen und versuche es erneut.",
+      /** Error when the user's membership changed concurrently, for example in another browser tab. */
       membershipConflict: "Deine Teamzuordnung wurde inzwischen geändert. Bitte prüfe den aktuellen Stand.",
-      loginRequired: "Bitte melde dich zuerst an.", forbidden: "Diese Änderung ist für dieses Team nicht freigegeben.",
+      /** Error when an action requires authentication or the signed-in identity changed before the write. */
+      loginRequired: "Bitte melde dich zuerst an.",
+      /** Error when team rules, switching settings or membership do not permit an action. */
+      forbidden: "Diese Änderung ist für dieses Team nicht freigegeben.",
+      /** Error when the target team is full when the action is applied to the latest dataset. */
       teamFull: "Der letzte Platz wurde inzwischen vergeben. Bitte wähle ein anderes Team.",
+      /** Error when the requested team number is no longer an available team slot. */
       teamMissing: "Dieser Teamplatz ist nicht mehr verfügbar.",
+      /** Error for a blank or overlong edited name; {max} is replaced with nameMaxLength. */
       invalidName: "Bitte gib einen Namen mit 1 bis {max} Zeichen ein.",
+      /** Error for an unexpected dataset key, schema, team structure or duplicate member identity. */
       invalidData: "Die gespeicherten Teambildungsdaten haben ein unbekanntes oder ungültiges Format.",
+      /** Error when a named local store cannot be protected by the browser's Web Locks API. */
       localLock: "Dieser Browser unterstützt keine sicheren parallelen Änderungen an lokalen Daten.",
+      /** Error reported by the datastore when live observation fails, such as a rejected subscription. */
       observeFailed: "Live-Updates sind unterbrochen. Du kannst den Stand jederzeit aktualisieren.",
     },
-    /** Optional callbacks: onchange({ app, type, value }), onerror({ app, error }). */
+
+    /**
+     * Optional callback after a successful action in this instance; incoming live updates do not invoke it.
+     * Receives { app, type, value }: app is this instance, type is join (including switches), leave or rename,
+     * and value is a detached dataset snapshot. May return a Promise; failures are forwarded to onerror.
+     */
+    // onchange: async ({ app, type, value }) => {},
+
+    /**
+     * Optional callback receiving { app, error } for loading, saving, observation, profile-image or onchange errors.
+     * Domain errors may have error.code; HTTP failures may have error.status. May return a Promise.
+     * Callback failures are logged and never roll back an already completed action.
+     */
+    // onerror: async ({ app, error }) => {},
   },
   Instance: function () {
     let state = null, store, source, shell, content, status, dialog, unsubscribe;
