@@ -14,7 +14,7 @@
  */
 export const component = {
   name: "teambuild",
-  ccm: "././libs/framework/ccm-28.0.0.min.js",
+  ccm: "././libs/framework/ccm-28.1.0.min.js",
   /** Default instance configuration. Optional dependencies and callbacks are shown as commented examples. */
   config: {
     /** Stylesheet dependency loaded by CCM; replace or extend it to customize the instance's appearance. */
@@ -172,19 +172,19 @@ export const component = {
   Instance: function () {
     // state is the latest accepted datastore snapshot; null means no dataset exists yet.
     // store is the resolved CCM accessor; source is its connection/storage configuration.
-    let state = null, store, source, shell, content, status, dialog, unsubscribe;
+    let state = null, store, source, content, status, dialog;
     let grid, teamCount, teamLabel, peopleCount, peopleLabel, syncMode, refreshButton, editorView;
     // View records hold the root and cached data-ref Elements, not another copy of the saved dataset.
     // Retain cards by 1-based team number and rows globally by realm:key, even across team switches.
-    // Each card also retains its buttons and free seats; button metadata follows the element's lifetime.
+    // Each card also retains its button and free-seat view records, using the same { root, ...refs } shape.
     // render() removes obsolete card/row entries only after processing the complete team list.
-    const teamViews = new Map(), memberViews = new Map(), buttonViews = new WeakMap();
+    const teamViews = new Map(), memberViews = new Map();
     // readVersion invalidates stale responses within this instance; it is not the saved revision.
     // refreshing/active track the current read/write promises; refreshPending coalesces later reads.
     let destroyed = false, initialized = false, readVersion = 0, refreshing, active;
     // The editor owns its input value; draft stores conflict context and trigger restores focus.
     let refreshTimer, debounceTimer, refreshPending = false, draft = null, trigger = null;
-    let userListeners, userListener;
+    // One lifetime for browser events, User subscriptions and the dedicated accessor's callbacks.
     const life = new AbortController();
 
     /** Public diagnostics: local action in progress, untrusted snapshot, and observation state. Read only. */
@@ -216,20 +216,37 @@ export const component = {
     /** CCM ready: attach listeners once; start() may then be called repeatedly. */
     this.ready = async () => {
       this.gui.connection = store.getConnectionState?.() ?? "disconnected";
-      unsubscribe = observeStore(store, scheduleRefresh, error => {
-        this.gui.connection = "disconnected";
-        render();
-        announce(this.labels.observeFailed, true);
-        report(error);
-      }, connection => {
-        if (destroyed) return;
-        this.gui.connection = connection;
-        render();
-        // Read again after subscription acknowledgement to close any gap during reconnection.
-        if (connection === "connected") scheduleRefresh();
-      });
+      const callbacks = {
+        onchange: scheduleRefresh,
+        onerror: error => {
+          this.gui.connection = "disconnected";
+          render();
+          announce(this.labels.observeFailed, true);
+          report(error);
+        },
+        onconnectionchange: connection => {
+          if (destroyed) return;
+          this.gui.connection = connection;
+          render();
+          // Read after subscription acknowledgement to close any gap during reconnection.
+          if (connection === "connected") scheduleRefresh();
+        },
+      };
+      for (const [name, handler] of Object.entries(callbacks)) {
+        const previous = store[name];
+        const callback = async value => {
+          handler(value);
+          // Our debounced read replaces CCM's automatic parent.start; forward custom callbacks.
+          if (previous && !(name === "onchange" && previous === store.parent?.start)) await previous(value);
+        };
+        store[name] = callback;
+        life.signal.addEventListener("abort", () => {
+          // Embedding code may have replaced a callback since ready(); restore only our own.
+          if (store[name] === callback) store[name] = previous;
+        }, { once: true });
+      }
       if (this.user?.subscribe) {
-        userListener = type => {
+        const listener = type => {
           if (destroyed || !["login", "register", "logout", "deleteAccount"].includes(type)) return;
           closeEditor();
           // Observe subscriptions carry their own authentication token; renew it on account changes.
@@ -237,7 +254,8 @@ export const component = {
           scheduleRefresh();
           render();
         };
-        userListeners = this.user.subscribe(userListener);
+        const listeners = this.user.subscribe(listener);
+        life.signal.addEventListener("abort", () => listeners?.delete?.(listener), { once: true });
       }
     };
 
@@ -308,7 +326,7 @@ export const component = {
     this.getValue = () => structuredClone(state ?? emptyState(this.data.key));
 
     /** @returns {Object[]} Detached visible teams with 1-based number, name, members and effective rule flags. */
-    this.getTeams = () => teamsFor(state ?? emptyState(this.data.key), this);
+    this.getTeams = () => structuredClone(visibleTeams(state ?? emptyState(this.data.key), this));
 
     /**
      * @param {number} number 1-based target team; also performs an atomic switch.
@@ -390,12 +408,11 @@ export const component = {
 
     // Treat notifications as invalidations, not replacement snapshots (deletions can carry old data).
     // Debounce bursts for 40 ms; the next full read includes all changes committed before that read.
-    function scheduleRefresh() {
+    const scheduleRefresh = () => {
       if (destroyed || !initialized) return;
       clearTimeout(debounceTimer);
-      debounceTimer = setTimeout(() => thisRefresh(), 40);
-    }
-    const thisRefresh = () => this.refresh({ silent: true }).catch(() => {});
+      debounceTimer = setTimeout(() => this.refresh({ silent: true }).catch(() => {}), 40);
+    };
     // A notification received during a read/write must still cause a subsequent authoritative read.
     const drainRefresh = () => {
       if (refreshPending && !destroyed && !this.gui.busy && !refreshing) {
@@ -467,7 +484,10 @@ export const component = {
 
       active = (async () => {
         if (command.type === "join") await loadPrivatePicture(actor);
-        return source.url ? work() : localTransaction(source, this.data.key, work);
+        if (source.url || !source.name) return work();
+        // Named IndexedDB stores need a lock across accessors/tabs; gui.busy suffices for isolated memory.
+        if (!globalThis.navigator?.locks) throw issue("localLock");
+        return navigator.locks.request(`ccm-teambuild:${JSON.stringify([source.name, this.data.key])}`, work);
       })();
 
       try {
@@ -554,15 +574,14 @@ export const component = {
     const mount = () => {
       const view = createView("main", undefined, ["content", "grid", "status", "dialog", "sync", "syncMode",
         "teamCount", "teamLabel", "peopleCount", "peopleLabel", ...(this.user ? ["user"] : [])]);
-      shell = view.root;
       ({ content, grid, status, dialog, syncMode, teamCount, teamLabel, peopleCount, peopleLabel } = view);
       for (const [key, value] of Object.entries(this.theme))
-        if (/^[a-z][a-z0-9-]*$/.test(key)) shell.style.setProperty(`--tb-${key}`, String(value));
+        if (/^[a-z][a-z0-9-]*$/.test(key)) view.root.style.setProperty(`--tb-${key}`, String(value));
       refreshButton = button("refresh", "secondary");
-      view.sync.append(refreshButton);
+      view.sync.append(refreshButton.root);
       if (this.user) view.user.append(this.user.host);
       // No instance argument: createView already bound our controls; the User owns its own events.
-      this.ui.render(shell, this.element);
+      this.ui.render(view.root, this.element);
       render();
     };
 
@@ -573,10 +592,9 @@ export const component = {
     };
 
     /** Patch a retained button, including its current action; never replace unchanged SVGs or labels. */
-    const updateButton = (result, action, className = "", label = this.labels[action]) => {
-      const view = buttonViews.get(result);
-      setProperty(result, "className", `${view.baseClass} ${className}`.trim());
-      setAttribute(result, "data-action", action);
+    const updateButton = (view, action, className = "", label = this.labels[action]) => {
+      setProperty(view.root, "className", `${view.baseClass} ${className}`.trim());
+      setAttribute(view.root, "data-action", action);
       const markup = String(this.icons[action] ?? "");
       if (view.markup !== markup) {
         // Only trusted configuration icons bypass escaping; user-provided text is never passed to raw().
@@ -588,19 +606,9 @@ export const component = {
 
     const button = (action, className = "", label = this.labels[action]) => {
       const view = createView("button", undefined, ["icon", "label"]);
-      const result = view.root;
-      buttonViews.set(result, { ...view, baseClass: result.className });
-      updateButton(result, action, className, label);
-      return result;
-    };
-
-    /** Create the card's retained view record; renderTeam supplies current content and effective rules. */
-    const createTeamView = number => {
-      const view = createView("team", { number }, ["top", "caption", "badge", "heading", "title", "list", "empty", "emptyText", "emptyHint", "footer"]);
-      view.root.dataset.team = String(number);
-      const action = button("join");
-      view.footer.append(action);
-      return { ...view, card: view.root, action, seats: [] };
+      view.baseClass = view.root.className;
+      updateButton(view, action, className, label);
+      return view;
     };
 
     /** A member retains its row and avatar even when moving between team lists. */
@@ -608,7 +616,7 @@ export const component = {
       let view = memberViews.get(member.id);
       if (!view) {
         view = createView("member", member, ["avatar", "name", "you"]);
-        view.row = view.root; view.row.dataset.member = member.id;
+        view.root.dataset.member = member.id;
         view.letters = document.createTextNode(""); view.avatar.append(view.letters);
         view.picture = null;
         memberViews.set(member.id, view);
@@ -630,20 +638,29 @@ export const component = {
         }
       }
       // A failed URL keeps its initials fallback until the URL changes; unrelated updates do not reload it.
-      reconcileChildren(view.row, [view.avatar, view.name, ...(member.id === actor?.id ? [view.you] : [])]);
-      return view.row;
+      reconcileChildren(view.root, [view.avatar, view.name, ...(member.id === actor?.id ? [view.you] : [])]);
+      return view.root;
     };
 
     /**
-     * Patch one retained card using the latest derived team descriptor; saved data is never mutated here.
+     * Create a missing card, then patch its retained view with derived data, just like renderMember().
      * reconcileChildren owns the listed parents' entire direct child lists, including optional nodes.
      * Detached badges, edit buttons and list/empty views keep their cached references for later reuse.
      */
-    const renderTeam = (view, team, actor, own, seenMembers) => {
+    const renderTeam = (team, actor, own, seenMembers) => {
+      let view = teamViews.get(team.number);
+      if (!view) {
+        view = createView("team", { number: team.number }, ["top", "caption", "badge", "heading", "title", "list", "empty", "emptyText", "emptyHint", "footer"]);
+        view.root.dataset.team = String(team.number);
+        view.action = button("join");
+        view.seats = [];
+        view.footer.append(view.action.root);
+        teamViews.set(team.number, view);
+      }
       view.team = team;
       const mine = own === team.number;
-      setClass(view.card, "mine", mine);
-      setClass(view.card, "empty", !team.members.length);
+      setClass(view.root, "mine", mine);
+      setClass(view.root, "empty", !team.members.length);
       setProperty(view.caption, "textContent", text("teamNumber", { number: String(team.number).padStart(2, "0") }));
       setProperty(view.badge, "textContent", String(this.labels.yourTeam));
       reconcileChildren(view.top, [view.caption, ...(mine ? [view.badge] : [])]);
@@ -652,30 +669,27 @@ export const component = {
       if (editable) {
         view.edit ??= button("edit", "icon-button");
         updateButton(view.edit, "edit", "icon-button");
-        setAttribute(view.edit, "aria-label", this.labels.edit);
-        setAttribute(view.edit, "title", this.labels.edit);
-        setProperty(view.edit, "disabled", this.gui.busy || this.gui.stale);
+        setAttribute(view.edit.root, "aria-label", this.labels.edit);
+        setAttribute(view.edit.root, "title", this.labels.edit);
+        setProperty(view.edit.root, "disabled", this.gui.busy || this.gui.stale);
       }
-      reconcileChildren(view.heading, [view.title, ...(editable ? [view.edit] : [])]);
+      reconcileChildren(view.heading, [view.title, ...(editable ? [view.edit.root] : [])]);
       const rows = team.members.map(member => {
         seenMembers.add(member.id);
         return renderMember(member, actor);
       });
       // Empty seats exist only in the view; maxMembers = 0 creates no placeholders.
       const free = Math.max(0, this.maxMembers - team.members.length);
-      while (view.seats.length > free) view.seats.pop().row.remove();
-      while (view.seats.length < free) {
-        const seat = createView("seat", undefined, ["label"]);
-        view.seats.push({ row: seat.root, label: seat.label });
-      }
+      while (view.seats.length > free) view.seats.pop().root.remove();
+      while (view.seats.length < free) view.seats.push(createView("seat", undefined, ["label"]));
       for (const seat of view.seats) {
         setProperty(seat.label, "textContent", String(this.labels.emptyMember));
-        rows.push(seat.row);
+        rows.push(seat.root);
       }
       reconcileChildren(view.list, rows);
       setProperty(view.emptyText, "textContent", String(this.labels.empty));
       setProperty(view.emptyHint, "textContent", String(this.labels.emptyHint));
-      reconcileChildren(view.card, [view.top, view.heading, rows.length ? view.list : view.empty, view.footer]);
+      reconcileChildren(view.root, [view.top, view.heading, rows.length ? view.list : view.empty, view.footer]);
 
       const full = this.maxMembers > 0 && team.members.length >= this.maxMembers;
       const withinLimit = !this.maxTeams || team.number <= this.maxTeams;
@@ -684,8 +698,9 @@ export const component = {
       const label = mine ? this.labels.leave : full ? this.labels.full
         : !team.joinable || !withinLimit ? this.labels.closed : this.labels[action];
       updateButton(view.action, action, mine ? "secondary" : "primary", label);
-      setProperty(view.action, "disabled", this.gui.busy || this.gui.stale || (mine
+      setProperty(view.action.root, "disabled", this.gui.busy || this.gui.stale || (mine
         ? !team.leavable : !actor || full || !team.joinable || !withinLimit || !canSwitch));
+      return view.root;
     };
 
     /**
@@ -716,20 +731,18 @@ export const component = {
       // Keep a visible label if a custom configuration deliberately removes the refresh icon.
       const iconOnly = live && String(this.icons.refresh ?? "").trim();
       updateButton(refreshButton, "refresh", `secondary${iconOnly ? " icon-button" : ""}`);
-      setAttribute(refreshButton, "aria-label", this.labels.refresh);
-      setAttribute(refreshButton, "title", this.labels.refresh);
-      setProperty(refreshButton, "disabled", this.gui.busy);
+      setAttribute(refreshButton.root, "aria-label", this.labels.refresh);
+      setAttribute(refreshButton.root, "title", this.labels.refresh);
+      setProperty(refreshButton.root, "disabled", this.gui.busy);
       const cards = [], seenMembers = new Set(), seenTeams = new Set();
       for (const team of teams) {
-        let view = teamViews.get(team.number);
-        if (!view) { view = createTeamView(team.number); teamViews.set(team.number, view); }
-        renderTeam(view, team, actor, own, seenMembers);
-        cards.push(view.card); seenTeams.add(team.number);
+        cards.push(renderTeam(team, actor, own, seenMembers));
+        seenTeams.add(team.number);
       }
       reconcileChildren(grid, cards);
       for (const [number] of teamViews) if (!seenTeams.has(number)) teamViews.delete(number);
       // Clean up after all cards were processed: a row removed from one team may have moved to another.
-      for (const [id, view] of memberViews) if (!seenMembers.has(id)) { view.row.remove(); memberViews.delete(id); }
+      for (const [id, view] of memberViews) if (!seenMembers.has(id)) { view.root.remove(); memberViews.delete(id); }
       setAttribute(content, "aria-busy", String(this.gui.busy));
       for (const control of dialog.querySelectorAll("input, button")) setProperty(control, "disabled", this.gui.busy);
       if (focusAction && !dialog.open && this.element.getRootNode().activeElement !== focused) {
@@ -748,8 +761,8 @@ export const component = {
       draft = { number: team.number, expectedName: team.name };
       editorView = createView("editor", team, ["name", "error", "actions"]);
       const cancel = button("cancel", "secondary");
-      const save = button("save", "primary"); save.type = "submit";
-      editorView.actions.append(cancel, save);
+      const save = button("save", "primary"); save.root.type = "submit";
+      editorView.actions.append(cancel.root, save.root);
       this.ui.render(editorView.root, dialog);
       dialog.showModal(); editorView.name.focus(); editorView.name.select();
     };
@@ -770,7 +783,6 @@ export const component = {
     this.destroy = async () => {
       destroyed = true; ++readVersion;
       life.abort(); clearInterval(refreshTimer); clearTimeout(debounceTimer);
-      unsubscribe?.(); unsubscribe = null; userListeners?.delete?.(userListener);
       if (store?.parent === this) store.close?.();
       try { await active; } catch { /* Original caller receives the save error. */ }
       teamViews.clear(); memberViews.clear();
@@ -820,11 +832,7 @@ export const component = {
       const override = config.teamOverrides[number - 1] ?? {};
       return Object.fromEntries(["editable", "joinable", "leavable"].map(key => [key, override[key] ?? config[key]]));
     }
-    /** Return detached visible-team descriptors: number, resolved name, members and the three effective rules. */
-    function teamsFor(state, config) {
-      return structuredClone(visibleTeams(state, config));
-    }
-    /** Internal view descriptors borrow member arrays; public callers receive detached copies via teamsFor(). */
+    /** Derive visible slots and effective rules; borrow member arrays internally, copy only in public getTeams(). */
     function visibleTeams(state, config) {
       const last = state.teams.findLastIndex(team => team.members.length > 0);
       // Reuse empty trailing places, retain occupied teams beyond a subsequently reduced limit.
@@ -855,7 +863,7 @@ export const component = {
       if (command.type === "leave" && !own) return null;
       if (own !== command.from) throw issue("membershipConflict");
       if (command.type === "join") {
-        const target = teamsFor(state, config).find(team => team.number === command.number);
+        const target = visibleTeams(state, config).find(team => team.number === command.number);
         if (!target || (config.maxTeams && command.number > config.maxTeams)) throw issue("teamMissing");
         if (!target.joinable || (own && (!config.allowSwitch || !rules(config, own).leavable))) throw issue("forbidden");
         if (config.maxMembers && target.members.length >= config.maxMembers) throw issue("teamFull");
@@ -957,40 +965,6 @@ export const component = {
         const url = new URL(value);
         return ["https:", "http:"].includes(url.protocol) && !url.username && !url.password ? url.href : null;
       } catch { return null; }
-    }
-
-    /** IndexedDB accessors share an origin-wide Web Lock; in-memory actions are guarded by gui.busy. */
-    async function localTransaction(source, key, operation) {
-      if (!source.name) return operation();
-      if (!globalThis.navigator?.locks) throw issue("localLock");
-      return navigator.locks.request(`ccm-teambuild:${JSON.stringify([source.name, key])}`, operation);
-    }
-
-    /** Attach this instance to its dedicated accessor, preserving external callbacks until cleanup. */
-    function observeStore(store, changed, failed, connectionChanged) {
-      const previous = store.onchange;
-      const previousError = store.onerror;
-      const previousConnection = store.onconnectionchange;
-      const change = async value => {
-        changed(value);
-        // Replace CCM's automatic parent.start callback with our debounced read; preserve custom callbacks.
-        if (previous && previous !== store.parent?.start) await previous(value);
-      };
-      const error = async value => {
-        failed(value);
-        if (previousError) await previousError(value);
-      };
-      const connection = async state => {
-        connectionChanged(state);
-        if (previousConnection) await previousConnection(state);
-      };
-      store.onchange = change; store.onerror = error; store.onconnectionchange = connection;
-      return () => {
-        // Restore only callbacks still owned by this instance; embedding code may have replaced them.
-        if (store.onchange === change) store.onchange = previous;
-        if (store.onerror === error) store.onerror = previousError;
-        if (store.onconnectionchange === connection) store.onconnectionchange = previousConnection;
-      };
     }
   },
 };

@@ -11,7 +11,7 @@ is required.
 ## Embedding
 
 ```html
-<script src="./libs/framework/ccm-28.0.0.min.js"></script>
+<script src="./libs/framework/ccm-28.1.0.min.js"></script>
 <div id="teams"></div>
 <script type="module">
   await ccm.start("./ccm.teambuild.mjs", {
@@ -245,7 +245,7 @@ current dataset and restarts an interrupted or incomplete live connection. Once
 the server acknowledges observation, missed changes are reloaded and subsequent
 changes arrive automatically again.
 
-The bundled framework exposes the observation state through
+The bundled ccmjs v28.1.0 framework exposes the observation state through
 `getConnectionState()` and `onconnectionchange`. With a framework that does not
 provide this interface, the button text remains visible. It also remains visible
 when `icons.refresh` is empty.
@@ -367,10 +367,10 @@ following entry points explain the main flows:
 | Lifecycle | `init()` normalizes options; `ready()` attaches listeners; `start()` mounts once and reads; `destroy()` detaches owned resources |
 | Incoming changes | `scheduleRefresh()` → `refresh()` → `render()`; the datastore remains authoritative |
 | User actions | `join()` / `leave()` / `rename()` → `mutate()` → `applyAction()` → conditional write |
-| Domain rules | `teamsFor()`, `memberTeam()`, `teamName()` and `applyAction()` derive team slots and enforce membership rules without I/O |
+| Domain rules | `visibleTeams()`, `memberTeam()`, `teamName()` and `applyAction()` derive team slots and enforce membership rules without I/O |
 | Templates | `resources/views.mjs` exports HTML factories loaded through `config.views`; `createView()` caches their `data-ref` elements and binds their `data-on-*` events once |
 | Rendering | `render()` reuses records from `teamViews` / `memberViews`; `renderTeam()` and `renderMember()` patch them; `reconcileChildren()` retains and orders nodes |
-| Datastore lifecycle | `localTransaction()` locks IndexedDB writes; `observeStore()` attaches to the dedicated accessor and restores callbacks on cleanup |
+| Datastore lifecycle | `mutate()` locks IndexedDB writes; `ready()` attaches to the dedicated accessor; `life.abort()` restores callbacks during destruction |
 
 `state` holds the latest accepted dataset. The saved `revision` counts changes;
 the instance-local `readVersion` invalidates outdated responses. Keep these
@@ -390,10 +390,12 @@ It does not authenticate, lock or save; embedding applications should normally u
 the instance methods for those responsibilities.
 
 Each constructor owns its callbacks and state; there is no shared accessor registry.
-`observeStore()` preserves existing external callbacks and replaces CCM's automatic
-`parent.start` callback with a debounced read. Cleanup restores only callbacks that
-still belong to this instance. A component-created accessor is closed on destruction;
-an externally supplied accessor stays open and remains the embedding app's responsibility.
+`ready()` preserves existing external callbacks and replaces CCM's automatic
+`parent.start` callback with a debounced read. The `life` AbortController removes
+browser and User listeners and restores datastore callbacks on destruction.
+It restores only callbacks that still belong to this instance. A component-created
+accessor is closed on destruction; an externally supplied accessor stays open and
+remains the embedding app's responsibility.
 
 [resources/styles.css](resources/styles.css) groups styles by the toolbar, cards,
 members, buttons and editor. Native CSS nesting scopes these rules to `.teambuild`;
@@ -424,9 +426,10 @@ The component uses two separate operations:
 1. `createView(name, data, required)` calls the factory, finds the required
    `data-ref` descendants and binds `data-on-*` events. Its result is a view record
    such as `{ root, title, list, ... }` containing references to actual DOM elements.
-2. The internal `render()` reuses these records and calls `renderTeam()`,
-   `renderMember()` and `updateButton()`. These functions compare current values
-   before writing text, attributes or properties. `reconcileChildren()` inserts,
+2. The internal `render()` calls `renderTeam()` and `renderMember()`, which look up
+   their retained records and create views only when missing. These functions and
+   `updateButton()` compare current values before writing text, attributes or
+   properties. `reconcileChildren()` inserts,
    removes or moves existing elements to match the required child order.
 
 `ccm-ui` supplies HTML creation and event binding; the component implements the
@@ -434,6 +437,11 @@ incremental updates. In particular, `ui.render(content, target)` replaces the
 target's children. It is used to mount the shell, install a newly opened editor
 form and replace changed icon content. The internal `render()` never uses it to
 replace the team grid.
+
+Cards, members, buttons and free seats all use the same `{ root, ...refs }` record
+shape. A card owns its button and seat records directly; no separate button registry
+is needed. Derived team descriptors borrow member arrays internally; `getTeams()`
+returns a detached copy so public callers cannot change the accepted snapshot.
 
 The shell is created on the first `start()`. Cards are cached by team number;
 member rows are cached globally by `realm:key`, allowing the same row and avatar
@@ -451,7 +459,7 @@ For example, a remote rename follows this path:
 ```text
 notification → scheduleRefresh() → refresh() → full store.get(data.key)
              → validate and accept state → render()
-             → reuse teamViews.get(number) → renderTeam(view, latestTeam, ...)
+             → renderTeam(latestTeam, ...) → reuse teamViews.get(number)
              → setProperty(view.title, "textContent", latestTeam.name)
 ```
 
