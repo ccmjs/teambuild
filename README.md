@@ -350,9 +350,9 @@ HTTP read alone does not imply a working live subscription.
 ## Developer guide
 
 Start with [ccm.teambuild.mjs](ccm.teambuild.mjs). Its `config` documents the public
-options; `Instance` owns the lifecycle and I/O; the functions below it contain the
-domain rules and shared-store utilities. The following entry points explain the
-main flows:
+options; the `Instance` constructor owns the lifecycle, I/O and private helpers.
+Only `component` is exported; all component logic is encapsulated within it. The
+following entry points explain the main flows:
 
 | Responsibility | Entry points and invariant |
 | --- | --- |
@@ -375,11 +375,19 @@ names and identities survive later reuse. Member rows are keyed globally by
 member views only after processing all teams. Retained event handlers must read
 current action/view state rather than capture outdated permissions or names.
 
-The exported domain helpers require validated input and complete options, including
+The private domain helpers require validated input and complete options, including
 defaults. `applyAction()` returns a new dataset with one revision increment, returns
 `null` when the intent is already satisfied, or throws an error with a domain code.
 It does not authenticate, lock or save; embedding applications should normally use
 the instance methods for those responsibilities.
+
+`Instance` is initialized by a factory that runs once per component module. Its
+private `localQueues` and `observers` WeakMaps live outside the returned constructor
+so every instance shares them, including instances created from CCM component
+clones. Do not move these registries into the constructor: that would break
+serialization and subscription coordination for shared datastore accessors.
+Destroying an instance removes only its listener; the last listener restores the
+accessor's original callbacks. Named local stores still use origin-wide Web Locks.
 
 [resources/styles.css](resources/styles.css) groups styles by the toolbar, cards,
 members, buttons and editor. Native CSS nesting scopes these rules to `.teambuild`;

@@ -4,25 +4,6 @@
  * Use the same backend URL for authentication and data, and match observe.key to data.key.
  */
 
-/** Persistent shared demo with authentication and WebSocket observation through the local CCM server. */
-export const demo = {
-  /** Keep the demo in German; the component's default interface is English. */
-  labels: ["ccm.load", "././resources/content.mjs#labels.de"],
-  maxMembers: 4,
-  maxTeams: 6,
-  teamNames: ["Ideenwerkstatt", "Perspektivwechsel", "Zukunftslabor"],
-  user: ["ccm.instance", "././libs/user/ccm.user-1.0.0.min.mjs", {
-    url: "http://localhost:8080", realm: "ccm", registration: true,
-  }],
-  data: {
-    key: "demo",
-    store: ["ccm.store", {
-      name: "teambuild", url: "http://localhost:8080", observe: { key: "demo" },
-    }],
-    permissions: { access: { get: "all", set: "realm", del: "owner" } },
-  },
-};
-
 /** Shared formation with authenticated users and WebSocket observation. */
 export const realtime = {
   maxMembers: 4,
@@ -53,4 +34,18 @@ export const manual = {
 export const frozen = {
   ...realtime, editable: false, joinable: false, leavable: false,
   teamOverrides: [{ joinable: true, leavable: true }],
+};
+
+/** Realtime demo with German labels and a separate dataset; all other options are inherited. */
+export const demo = {
+  ...realtime,
+  labels: ["ccm.load", "././resources/content.mjs#labels.de"],
+  data: {
+    ...realtime.data,
+    key: "demo",
+    store: [realtime.data.store[0], {
+      ...realtime.data.store[1],
+      observe: { ...realtime.data.store[1].observe, key: "demo" },
+    }],
+  },
 };
