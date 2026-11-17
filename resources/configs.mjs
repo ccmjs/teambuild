@@ -17,6 +17,8 @@ export const realtime = {
     permissions: { access: { get: "all", set: "realm", del: "owner" } },
   },
   user: ["ccm.instance", "././libs/user/ccm.user-1.0.0.min.mjs", {
+    // Reuse Teambuild's framework instead of loading the User release's older default.
+    ccm: "././libs/framework/ccm-28.1.0.min.js",
     url: "http://localhost:8080", realm: "ccm", registration: true,
   }],
 };

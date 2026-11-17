@@ -24,6 +24,7 @@ is required.
       }]
     },
     user: ["ccm.instance", "./libs/user/ccm.user-1.0.0.min.mjs", {
+      ccm: "./libs/framework/ccm-28.1.0.min.js",
       url: "https://your-ccm-server.example",
       realm: "ccm"
     }],
