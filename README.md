@@ -65,7 +65,7 @@ area and the team formation is read-only.
 
 | Property | Default | Description |
 | --- | --- | --- |
-| `data.store` | `["ccm.store"]` | CCM datastore; defaults to in-memory storage |
+| `data.store` | `["ccm.store"]` | Dedicated CCM accessor per instance; defaults to isolated in-memory storage |
 | `data.key` | `"teambuild"` | One dataset per formation; compound CCM keys are also supported |
 | `data.permissions` | See below | Access metadata applied when creating the dataset; `null` omits it |
 | `user` | Not set | Optional User component; login controls on the right of the toolbar |
@@ -306,10 +306,18 @@ writes require an additional database-level mechanism. All participating team
 formation clients must use conditional writes.
 
 For local IndexedDB storage, the Web Locks API coordinates changes across tabs
-of the same origin. Local writes are rejected if that API is unavailable. Unnamed
-in-memory stores serialize changes per shared datastore accessor within the page;
-they do not provide collaboration across devices. Other local writers must use
-the same lock. Use the CCM server for collaboration between remote clients.
+of the same origin. IndexedDB writes are rejected if that API is unavailable. Unnamed
+in-memory stores are isolated per instance and do not provide collaboration across
+devices. Use the CCM server for collaboration between remote clients.
+
+Each Teambuild instance requires its **own datastore accessor**. Prefer configuring
+`data.store` with a `ccm.store` dependency, which creates an accessor for each
+instance. An existing accessor must be dedicated to that instance; sharing one
+store object between Teambuild instances is unsupported, even for different keys.
+Separate accessors may use the same remote datastore and dataset key: each receives
+its own realtime notifications, while server-side `ifMatch` checks protect concurrent
+writes. IndexedDB accessors using the same store/key remain coordinated by Web Locks.
+In-memory writes are serialized only within the owning instance by its busy flag.
 
 ## Instance API
 
@@ -332,8 +340,8 @@ on errors; they resolve without returning a dataset. Use `getValue()` after an
 action to inspect its local snapshot. `onchange({ app, type, value })` receives
 `join` (including switches), `leave` or `rename`; incoming notifications do not
 invoke it. `onerror({ app, error })` receives errors. Returned datasets and team
-lists are detached copies. An externally supplied, shared datastore remains owned
-by the embedding application.
+lists are detached copies. An externally supplied, dedicated accessor remains owned
+by the embedding application; its callbacks are restored when the instance is destroyed.
 
 An already satisfied action does not write: joining the current team, leaving when
 already outside all teams, or saving the current name resolves without a revision
@@ -362,7 +370,7 @@ following entry points explain the main flows:
 | Domain rules | `teamsFor()`, `memberTeam()`, `teamName()` and `applyAction()` derive team slots and enforce membership rules without I/O |
 | Templates | `resources/views.mjs` exports HTML factories loaded through `config.views`; `createView()` caches their `data-ref` elements and binds their `data-on-*` events once |
 | Rendering | `render()` reuses records from `teamViews` / `memberViews`; `renderTeam()` and `renderMember()` patch them; `reconcileChildren()` retains and orders nodes |
-| Shared access | `localTransaction()` serializes local writes; `observeStore()` distributes callbacks and restores them on cleanup |
+| Datastore lifecycle | `localTransaction()` locks IndexedDB writes; `observeStore()` attaches to the dedicated accessor and restores callbacks on cleanup |
 
 `state` holds the latest accepted dataset. The saved `revision` counts changes;
 the instance-local `readVersion` invalidates outdated responses. Keep these
@@ -381,13 +389,11 @@ defaults. `applyAction()` returns a new dataset with one revision increment, ret
 It does not authenticate, lock or save; embedding applications should normally use
 the instance methods for those responsibilities.
 
-`Instance` is initialized by a factory that runs once per component module. Its
-private `localQueues` and `observers` WeakMaps live outside the returned constructor
-so every instance shares them, including instances created from CCM component
-clones. Do not move these registries into the constructor: that would break
-serialization and subscription coordination for shared datastore accessors.
-Destroying an instance removes only its listener; the last listener restores the
-accessor's original callbacks. Named local stores still use origin-wide Web Locks.
+Each constructor owns its callbacks and state; there is no shared accessor registry.
+`observeStore()` preserves existing external callbacks and replaces CCM's automatic
+`parent.start` callback with a debounced read. Cleanup restores only callbacks that
+still belong to this instance. A component-created accessor is closed on destruction;
+an externally supplied accessor stays open and remains the embedding app's responsibility.
 
 [resources/styles.css](resources/styles.css) groups styles by the toolbar, cards,
 members, buttons and editor. Native CSS nesting scopes these rules to `.teambuild`;
