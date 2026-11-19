@@ -445,7 +445,7 @@ is needed. Derived team descriptors borrow member arrays internally; `getTeams()
 returns a detached copy so public callers cannot change the accepted snapshot.
 
 The shell is created on the first `start()`. Cards are cached by team number;
-member rows are cached globally by `realm:key`, allowing the same row and avatar
+member rows are cached across each instance's teams by `realm:key`, allowing the same row and avatar
 to move between teams. Each card retains its buttons and free seats. Cards and
 member rows absent from the complete visible team list are released; a later
 reappearance creates a new view. Optional badges and edit buttons stay cached
@@ -468,6 +468,13 @@ This updates the existing title without calling the team factory or rebinding it
 buttons. A team switch similarly moves the existing member row. All visible teams
 and members are still scanned, even when no DOM value changes. Changes to login,
 connection, busy or stale state also trigger `render()` without new team data.
+
+When adding a live field, add its template anchor, include it in the owning
+`createView()` call's required references and patch it in `renderTeam()`,
+`renderMember()` or `updateButton()`. Template interpolation runs only at creation.
+Use the comparison helpers for leaf values and `reconcileChildren()` for ordered
+child lists. Do not skip rendering solely because the dataset revision is unchanged:
+configuration, authentication and connection state may have changed independently.
 
 Template interpolations run **only at creation**. For example, a custom
 `${member.name}` outside the managed `name` anchor would become stale after a

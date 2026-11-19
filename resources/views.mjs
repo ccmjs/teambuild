@@ -5,6 +5,8 @@
  * Treat the optional second argument as read-only; member metadata may reference accepted state.
  * Interpolations run only at creation. renderTeam/renderMember/updateButton in ccm.teambuild.mjs
  * patch later changes through the data-ref elements cached by createView().
+ * For a new live field, add its anchor here and its cached reference/update in the owning render function.
+ * Template interpolation alone does not update a retained view after creation.
  * Preserve required anchors, managed child lists and data-on-* actions (see README: HTML templates).
  * Templates are trusted configuration; interpolate user text normally and reserve ui.raw for trusted icons.
  *

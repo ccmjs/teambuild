@@ -175,7 +175,7 @@ export const component = {
     let state = null, store, source, content, status, dialog;
     let grid, teamCount, teamLabel, peopleCount, peopleLabel, syncMode, refreshButton, editorView;
     // View records hold the root and cached data-ref Elements, not another copy of the saved dataset.
-    // Retain cards by 1-based team number and rows globally by realm:key, even across team switches.
+    // Retain cards by 1-based team number and rows across this instance's teams by realm:key.
     // Each card also retains its button and free-seat view records, using the same { root, ...refs } shape.
     // render() removes obsolete card/row entries only after processing the complete team list.
     const teamViews = new Map(), memberViews = new Map();
@@ -611,7 +611,7 @@ export const component = {
       return view;
     };
 
-    /** A member retains its row and avatar even when moving between team lists. */
+    /** Look up/create by identity, patch display metadata, return the retained row for placement by renderTeam(). */
     const renderMember = (member, actor) => {
       let view = memberViews.get(member.id);
       if (!view) {
@@ -624,6 +624,8 @@ export const component = {
       setProperty(view.name, "textContent", member.name);
       setProperty(view.letters, "data", initials(member.name));
       setProperty(view.you, "textContent", String(this.labels.you));
+      // sourcePicture is the received value; picture is its validated/normalized URL.
+      // Remember both to avoid repeated validation and image replacement for equivalent URLs.
       if (view.sourcePicture !== member.picture) {
         view.sourcePicture = member.picture;
         const picture = pictureURL(member.picture);
@@ -657,7 +659,7 @@ export const component = {
         view.footer.append(view.action.root);
         teamViews.set(team.number, view);
       }
-      view.team = team;
+      view.team = team; // Bound edit handlers read this latest descriptor instead of creation-time data.
       const mine = own === team.number;
       setClass(view.root, "mine", mine);
       setClass(view.root, "empty", !team.members.length);
@@ -678,7 +680,8 @@ export const component = {
         seenMembers.add(member.id);
         return renderMember(member, actor);
       });
-      // Empty seats exist only in the view; maxMembers = 0 creates no placeholders.
+      // Empty seats are anonymous, positional view records; retain the first N, with no saved member identity.
+      // maxMembers = 0 creates no placeholders.
       const free = Math.max(0, this.maxMembers - team.members.length);
       while (view.seats.length > free) view.seats.pop().root.remove();
       while (view.seats.length < free) view.seats.push(createView("seat", undefined, ["label"]));
@@ -708,6 +711,8 @@ export const component = {
      * Unlike ui.render(), this function retains existing roots and scans for changed properties/positions.
      * Create missing views, patch all visible teams, then release obsolete records after possible row moves.
      * Login, busy/stale and connection changes also call this function without changing the dataset.
+     * Always scan the current descriptors: an equal revision does not imply equal labels, rules or UI state.
+     * Order: patch toolbar → collect/patch cards and rows → reconcile grid → prune caches → restore focus.
      */
     const render = () => {
       if (!content || destroyed) return;
@@ -744,7 +749,10 @@ export const component = {
       // Clean up after all cards were processed: a row removed from one team may have moved to another.
       for (const [id, view] of memberViews) if (!seenMembers.has(id)) { view.root.remove(); memberViews.delete(id); }
       setAttribute(content, "aria-busy", String(this.gui.busy));
+      // Only update editor availability here; writing its input value would overwrite the user's draft.
       for (const control of dialog.querySelectorAll("input, button")) setProperty(control, "disabled", this.gui.busy);
+      // Moving/detaching a focused button can blur it. Prefer the same node, then the same team's action.
+      // Never take focus away from an open editor or restore it to a disabled control.
       if (focusAction && !dialog.open && this.element.getRootNode().activeElement !== focused) {
         const root = focusTeam ? content.querySelector(`[data-team="${focusTeam}"]`) : content;
         const target = focused.isConnected ? focused : root?.querySelector(`[data-action="${focusAction}"]`);
@@ -944,11 +952,12 @@ export const component = {
      * Template extensions must live inside a retained child whose contents are not patched as a leaf.
      * Remove obsolete children first to avoid needlessly moving retained nodes past disappearing ones.
      * insertBefore also moves a retained member row from its previous team without recreating it.
+     * This compares node identity and order only; renderTeam/renderMember patch the nodes' contents.
      */
     function reconcileChildren(parent, children) {
       const wanted = new Set(children);
       for (const child of [...parent.childNodes]) if (!wanted.has(child)) child.remove();
-      let cursor = parent.firstChild;
+      let cursor = parent.firstChild; // First child not yet matched; the prefix before it is already correct.
       for (const child of children) {
         if (child === cursor) cursor = cursor.nextSibling;
         else parent.insertBefore(child, cursor);
