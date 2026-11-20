@@ -1,6 +1,6 @@
 # Teambuild
 
-A ccmjs v28 component for collaborative team formation, with optional authentication,
+A ccmjs v29 component for collaborative team formation, with optional authentication,
 configurable team rules, responsive team cards and safe concurrent updates.
 Component logic and incremental UI updates live in `ccm.teambuild.mjs`; HTML
 templates live in `resources/views.mjs`, and labels and icons in
@@ -11,7 +11,7 @@ is required.
 ## Embedding
 
 ```html
-<script src="./libs/framework/ccm-28.1.0.min.js"></script>
+<script src="./libs/framework/ccm-29.0.0.min.js"></script>
 <div id="teams"></div>
 <script type="module">
   await ccm.start("./ccm.teambuild.mjs", {
@@ -24,7 +24,7 @@ is required.
       }]
     },
     user: ["ccm.instance", "./libs/user/ccm.user-1.0.0.min.mjs", {
-      ccm: "./libs/framework/ccm-28.1.0.min.js",
+      ccm: "./libs/framework/ccm-29.0.0.min.js",
       url: "https://your-ccm-server.example",
       realm: "ccm"
     }],
@@ -36,8 +36,7 @@ is required.
 ```
 
 The server must support the `ifMatch` write option described below. Deploy the
-accompanying extension in `ccm-server/lib/data.mjs` on the server. Unmodified ccmjs
-v28 already forwards this option. The component never falls back to unconditional
+accompanying extension in `ccm-server/lib/data.mjs` on the server. The bundled ccmjs v29 framework forwards this option. The component never falls back to unconditional
 overwrites.
 
 `index.html` provides an interactive demo with German team-building labels and the
@@ -246,7 +245,7 @@ current dataset and restarts an interrupted or incomplete live connection. Once
 the server acknowledges observation, missed changes are reloaded and subsequent
 changes arrive automatically again.
 
-The bundled ccmjs v28.1.0 framework exposes the observation state through
+The bundled ccmjs v29.0.0 framework exposes the observation state through
 `getConnectionState()` and `onconnectionchange`. With a framework that does not
 provide this interface, the button text remains visible. It also remains visible
 when `icons.refresh` is empty.

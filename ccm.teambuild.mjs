@@ -14,7 +14,7 @@
  */
 export const component = {
   name: "teambuild",
-  ccm: "././libs/framework/ccm-28.1.0.min.js",
+  ccm: "././libs/framework/ccm-29.0.0.min.js",
   /** Default instance configuration. Optional dependencies and callbacks are shown as commented examples. */
   config: {
     /** Stylesheet dependency loaded by CCM; replace or extend it to customize the instance's appearance. */
