@@ -10,6 +10,32 @@ is required.
 
 ## Embedding
 
+### From the CDN (v1.0.0)
+
+Paste this snippet into your page and replace `https://your-ccm-server.example`
+with your CCM server URL. Teambuild and User share ccmjs v29.0.0. All three
+modules below come from the pinned Teambuild release.
+
+```html
+<script src="https://cdn.jsdelivr.net/gh/ccmjs/teambuild@v1.0.0/libs/framework/ccm-29.0.0.min.js"></script>
+<div id="teams"></div>
+<script type="module">
+  const release = "https://cdn.jsdelivr.net/gh/ccmjs/teambuild@v1.0.0";
+  const url = "https://your-ccm-server.example";
+  const key = "seminar";
+
+  await ccm.start(`${release}/ccm.teambuild-1.0.0.min.mjs`, {
+    data: { key, store: ["ccm.store", { name: "teambuild", url, observe: { key } }] },
+    user: ["ccm.instance", `${release}/libs/user/ccm.user-1.0.0.min.mjs`, {
+      ccm: `${release}/libs/framework/ccm-29.0.0.min.js`, url, realm: "ccm"
+    }],
+    maxMembers: 4
+  }, document.querySelector("#teams"));
+</script>
+```
+
+### From a local checkout
+
 ```html
 <script src="./libs/framework/ccm-29.0.0.min.js"></script>
 <div id="teams"></div>
