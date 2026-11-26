@@ -14,7 +14,7 @@
  */
 export const component = {
   name: "teambuild",
-  ccm: "././libs/framework/ccm-29.1.0.min.js",
+  ccm: "https://cdn.jsdelivr.net/gh/ccmjs/teambuild@v2.0.0/libs/framework/ccm-29.1.0.min.js",
   /** Default instance configuration. Optional dependencies and callbacks are shown as commented examples. */
   config: {
     /** Shared dataset containing all teams and members of one formation. */
@@ -53,7 +53,7 @@ export const component = {
      * Pass User-specific options such as url, realm and registration in the dependency's third argument.
      * Display names and available profile pictures are copied into member records when joining or switching.
      */
-    // user: ["ccm.instance", "././libs/user/ccm.user-1.2.0.min.mjs"],
+    // user: ["ccm.instance", "https://cdn.jsdelivr.net/gh/ccmjs/teambuild@v2.0.0/libs/user/ccm.user-1.2.0.min.mjs"],
     /**
      * Maximum thumbnail edge in pixels for a private CCM profile upload copied into a member record.
      * A positive integer; aspect ratio is preserved and smaller images are not enlarged.
@@ -106,16 +106,16 @@ export const component = {
     retryLimit: 12,
 
     /** Versioned HTML templating and declarative event binding; loaded through CCM like the stylesheet. */
-    ui: ["ccm.load", "././libs/ccm-ui/ccm-ui-1.0.0.min.mjs"],
+    ui: ["ccm.load", "https://cdn.jsdelivr.net/gh/ccmjs/teambuild@v2.0.0/libs/ccm-ui/ccm-ui-1.0.0.min.mjs"],
     /**
      * HTML template module with named Element factories (see resources/views.mjs and README).
      * May also be a plain object or another ccm.load module overriding individual factories.
      * init() loads omitted factories from the default module; supplied overrides take precedence.
      * Templates run only for new views; retained elements are patched by the component's render functions.
      */
-    views: ["ccm.load", "././resources/views.mjs"],
+    views: ["ccm.load", "https://cdn.jsdelivr.net/gh/ccmjs/teambuild@v2.0.0/resources/views.mjs"],
     /** Stylesheet for the default Shadow DOM. With root: false, supply CSS scoped to your embedding container. */
-    css: ["ccm.load", "././resources/styles.css"],
+    css: ["ccm.load", "https://cdn.jsdelivr.net/gh/ccmjs/teambuild@v2.0.0/resources/styles.css"],
     /**
      * CSS variables on the CCM content element (.root). For example, `accent` sets `--tb-accent`.
      * Omitted keys use the stylesheet defaults.
@@ -148,14 +148,14 @@ export const component = {
      * Accepts a `ccm.load` dependency or a plain object; partial overrides are merged with the defaults.
      * Each icon's purpose is documented beside its default value in `resources/content.mjs`.
      */
-    icons: ["ccm.load", "././resources/content.mjs#icons"],
+    icons: ["ccm.load", "https://cdn.jsdelivr.net/gh/ccmjs/teambuild@v2.0.0/resources/content.mjs#icons"],
     /**
      * Interface text, accessible names and messages from `resources/content.mjs`; defaults are English.
      * Select #labels.de for German. Accepts a `ccm.load` dependency or a plain object.
      * Partial overrides are merged with the English defaults; both bundled language maps are complete.
      * Individual labels and their placeholders are documented in `resources/content.mjs`.
      */
-    labels: ["ccm.load", "././resources/content.mjs#labels.en"],
+    labels: ["ccm.load", "https://cdn.jsdelivr.net/gh/ccmjs/teambuild@v2.0.0/resources/content.mjs#labels.en"],
   },
   Instance: function () {
     // state is the latest accepted datastore snapshot; null means no dataset exists yet.
