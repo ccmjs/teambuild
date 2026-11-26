@@ -1,53 +1,39 @@
 /**
  * Collaborative team formation with conditional writes and optional live updates.
  *
- * File guide: config describes the public options; Instance owns lifecycle, reads,
- * writes and DOM updates. resources/views.mjs creates markup; Instance's render() patches it.
- * resources/content.mjs supplies labels and icons. Private helpers inside Instance apply rules without I/O.
+ * File guide: `config` describes the public options; Instance owns lifecycle, reads,
+ * writes and DOM updates. `resources/views.mjs` creates markup; Instance's `render()` patches it.
+ * `resources/content.mjs` supplies labels and icons. Private helpers inside Instance apply rules without I/O.
  * Each Instance owns its datastore accessor, callbacks, state and private helpers.
  * A notification requests a full read; only the resulting DOM changes are incremental.
  *
  * @author André Kless <andre.kless@web.de>
  * @copyright 2026 André Kless
  * @license MIT
- * @version 1.0.0
+ * @version 2.0.0
  */
 export const component = {
   name: "teambuild",
-  ccm: "././libs/framework/ccm-29.0.0.min.js",
+  ccm: "././libs/framework/ccm-29.1.0.min.js",
   /** Default instance configuration. Optional dependencies and callbacks are shown as commented examples. */
   config: {
-    /** Stylesheet dependency loaded by CCM; replace or extend it to customize the instance's appearance. */
-    css: ["ccm.load", "././resources/styles.css"],
-
-    /** Versioned HTML templating and declarative event binding; loaded through CCM like the stylesheet. */
-    ui: ["ccm.load", "././libs/ccm-ui/ccm-ui-1.0.0.min.mjs"],
-
-    /**
-     * HTML template module with named Element factories (see resources/views.mjs and README).
-     * May also be a plain object or another ccm.load module overriding individual factories.
-     * init() loads omitted factories from the default module; supplied overrides take precedence.
-     * Templates run only for new views; retained elements are patched by the component's render functions.
-     */
-    views: ["ccm.load", "././resources/views.mjs"],
-
     /** Shared dataset containing all teams and members of one formation. */
     data: {
       /**
        * CCM datastore dependency or an existing accessor dedicated to this instance; never share an accessor.
-       * Prefer a fresh ccm.store dependency per instance. The default uses isolated in-memory storage.
+       * Prefer a fresh `ccm.store` dependency per instance. The default uses isolated in-memory storage.
        * A store with name only uses IndexedDB; name plus url uses the remote CCM server.
-       * For realtime updates, add observe: { key: <data.key> } to the remote store configuration.
-       * Example: ["ccm.store", { name: "teambuild", url: "https://example.org/api", observe: { key: "teambuild" } }].
-       * Remote writes require the server's options.ifMatch support to prevent lost concurrent changes.
+       * For realtime updates, add observe: `{ key: <data.key> }` to the remote store configuration.
+       * Example: `["ccm.store", { name: "teambuild", url: "https://example.org/api", observe: { key: "teambuild" } }]`.
+       * Remote writes require the server's `options.ifMatch` support to prevent lost concurrent changes.
        */
       store: ["ccm.store"],
       /** Dataset key shared by all participants; a CCM key string or a compound key array. */
       key: "teambuild",
       /**
-       * Metadata copied into the dataset's _ property only when the first participant creates it.
-       * The component sets owner to that participant's realm:key; existing permissions are preserved.
-       * Pre-create the dataset as a teacher to retain ownership. null omits this metadata on creation.
+       * Metadata copied into the dataset's `_` property only when the first participant creates it.
+       * The component sets owner to that participant's `realm:key`; existing permissions are preserved.
+       * Pre-create the dataset as a teacher to retain ownership. `null` omits this metadata on creation.
        */
       permissions: {
         /** Server-enforced access rules for the entire dataset; independent of the team UI rules below. */
@@ -61,60 +47,51 @@ export const component = {
         },
       },
     },
-
     /**
      * Optional CCM User instance; renders its own login/profile/logout controls in the top-right toolbar.
      * Omit it for read-only viewing. With a User instance, participants must sign in before changing teams.
      * Pass User-specific options such as url, realm and registration in the dependency's third argument.
      * Display names and available profile pictures are copied into member records when joining or switching.
      */
-    // user: ["ccm.instance", "././libs/user/ccm.user-1.0.0.min.mjs"],
-
-    /** Maximum members per team: a non-negative integer; 0 means unlimited. Lowering it never removes members. */
-    maxMembers: 0,
+    // user: ["ccm.instance", "././libs/user/ccm.user-1.2.0.min.mjs"],
+    /**
+     * Maximum thumbnail edge in pixels for a private CCM profile upload copied into a member record.
+     * A positive integer; aspect ratio is preserved and smaller images are not enlarged.
+     */
+    avatarSize: 96,
 
     /** Maximum number of teams: a non-negative integer; 0 means unlimited. Lowering it retains occupied teams. */
     maxTeams: 0,
-
+    /** Maximum members per team: a non-negative integer; 0 means unlimited. Lowering it never removes members. */
+    maxMembers: 0,
     /**
      * Preset team names as a string array; index 0 names team 1. Missing entries use labels.team.
      * Stored member-chosen names take precedence. Preset names alone do not create additional team cards.
      */
     teamNames: [],
 
-    /** Whether members may rename their own team; does not control joining or leaving. Overridable per team. */
-    editable: true,
-
     /** Whether signed-in users may join teams, including the trailing empty team. Overridable per team. */
     joinable: true,
-
     /** Whether members may leave their current team. Overridable per team. */
     leavable: true,
-
-    /**
-     * Per-team rule objects; index 0 applies to team 1. Explicit booleans override the global flags:
-     * - editable: allow this team's members to rename it.
-     * - joinable: allow joining this team.
-     * - leavable: allow leaving this team.
-     * Omitted flags inherit their global values. Example: [{ joinable: true, leavable: true }].
-     * These are UI rules; server-side write permissions are configured separately in data.permissions.
-     */
-    teamOverrides: [],
-
     /**
      * Allow a direct team switch, saved as one atomic change. Requires leavable on the current team
      * and joinable plus a free seat on the target team. false requires leaving before joining another team.
      */
     allowSwitch: true,
-
+    /** Whether members may rename their own team; does not control joining or leaving. Overridable per team. */
+    editable: true,
     /** Maximum length of a trimmed, edited team name, using JavaScript string length; a positive integer. */
     nameMaxLength: 60,
-
     /**
-     * Maximum thumbnail edge in pixels for a private CCM profile upload copied into a member record.
-     * A positive integer; aspect ratio is preserved and smaller images are not enlarged.
+     * Per-team rule objects; index 0 applies to team 1. Explicit booleans override the global flags:
+     * - joinable: allow joining this team.
+     * - leavable: allow leaving this team.
+     * - editable: allow this team's members to rename it.
+     * Omitted flags inherit their global values. Example: `[{ joinable: true, leavable: true }]`.
+     * These are UI rules; server-side write permissions are configured separately in `data.permissions`.
      */
-    avatarSize: 96,
+    teamOverrides: [],
 
     /**
      * Background reconciliation interval in milliseconds when datastore observation is enabled.
@@ -122,38 +99,36 @@ export const component = {
      * The timer reloads missed changes and attempts to reconnect observation while the page is visible.
      */
     refreshInterval: 30000,
-
     /**
      * Maximum conditional-write attempts per action, including the first attempt; a positive integer.
      * After HTTP 409, the component rereads the dataset and revalidates the action before retrying.
      */
     retryLimit: 12,
 
+    /** Versioned HTML templating and declarative event binding; loaded through CCM like the stylesheet. */
+    ui: ["ccm.load", "././libs/ccm-ui/ccm-ui-1.0.0.min.mjs"],
     /**
-     * CSS custom-property overrides, omitting the --tb- prefix. An empty object uses the stylesheet defaults.
+     * HTML template module with named Element factories (see resources/views.mjs and README).
+     * May also be a plain object or another ccm.load module overriding individual factories.
+     * init() loads omitted factories from the default module; supplied overrides take precedence.
+     * Templates run only for new views; retained elements are patched by the component's render functions.
+     */
+    views: ["ccm.load", "././resources/views.mjs"],
+    /** Stylesheet for the default Shadow DOM. With root: false, supply CSS scoped to your embedding container. */
+    css: ["ccm.load", "././resources/styles.css"],
+    /**
+     * CSS variables on the CCM content element (.root). For example, `accent` sets `--tb-accent`.
+     * Omitted keys use the stylesheet defaults.
      * Supported keys in the supplied stylesheet:
-     * - accent: primary buttons, live indicator and own-team border; accent-hover: primary button hover color.
-     * - background: component and input background; surface: cards, dialogs and secondary buttons.
-     * - text: main text color; muted: secondary text color; border: neutral borders and separators.
-     * - radius: card/dialog/component corner radius with a CSS unit; font: CSS font-family value.
-     * Example: { accent: "#6d28d9", radius: "14px" }. Partial overrides are supported.
+     * - `accent`: primary buttons and own-team border; `accent-hover`: primary button hover color.
+     * - `background`: component and input background; `surface`: cards, dialogs and secondary buttons.
+     * - `text`: main text color; `muted`: secondary text color; `border`: neutral borders and separators.
+     * - `positive`: live indicator and membership badge; `highlight`: empty-team marker.
+     * - `logo`: CSS image for the toolbar and rename dialog, e.g. `url("/assets/logo.svg")`.
+     * - `radius`: card/dialog/component corner radius with a CSS unit; `font`: CSS font-family value.
+     * Example: `{ accent: "#6d28d9", radius: "14px" }`. Partial overrides are supported.
      */
     theme: {},
-
-    /**
-     * Button icons from content.mjs: trusted SVG markup, text symbols or empty strings.
-     * Accepts a ccm.load dependency or a plain object; partial overrides are merged with the defaults.
-     * Each icon's purpose is documented beside its default value in resources/content.mjs.
-     */
-    icons: ["ccm.load", "././resources/content.mjs#icons"],
-
-    /**
-     * Interface text, accessible names and messages from content.mjs; defaults are English.
-     * Select #labels.de for German. Accepts a ccm.load dependency or a plain object.
-     * Partial overrides are merged with the English defaults; both bundled language maps are complete.
-     * Individual labels and their placeholders are documented in resources/content.mjs.
-     */
-    labels: ["ccm.load", "././resources/content.mjs#labels.en"],
 
     /**
      * Optional callback after a successful action in this instance; incoming live updates do not invoke it.
@@ -161,13 +136,26 @@ export const component = {
      * and value is a detached dataset snapshot. May return a Promise; failures are forwarded to onerror.
      */
     // onchange: async ({ app, type, value }) => {},
-
     /**
      * Optional callback receiving { app, error } for loading, saving, observation, profile-image or onchange errors.
      * Domain errors may have error.code; HTTP failures may have error.status. May return a Promise.
      * Callback failures are logged and never roll back an already completed action.
      */
     // onerror: async ({ app, error }) => {},
+
+    /**
+     * Button icons from `resources/content.mjs`: trusted SVG markup, text symbols or empty strings.
+     * Accepts a `ccm.load` dependency or a plain object; partial overrides are merged with the defaults.
+     * Each icon's purpose is documented beside its default value in `resources/content.mjs`.
+     */
+    icons: ["ccm.load", "././resources/content.mjs#icons"],
+    /**
+     * Interface text, accessible names and messages from `resources/content.mjs`; defaults are English.
+     * Select #labels.de for German. Accepts a `ccm.load` dependency or a plain object.
+     * Partial overrides are merged with the English defaults; both bundled language maps are complete.
+     * Individual labels and their placeholders are documented in `resources/content.mjs`.
+     */
+    labels: ["ccm.load", "././resources/content.mjs#labels.en"],
   },
   Instance: function () {
     // state is the latest accepted datastore snapshot; null means no dataset exists yet.
@@ -576,7 +564,7 @@ export const component = {
         "teamCount", "teamLabel", "peopleCount", "peopleLabel", ...(this.user ? ["user"] : [])]);
       ({ content, grid, status, dialog, syncMode, teamCount, teamLabel, peopleCount, peopleLabel } = view);
       for (const [key, value] of Object.entries(this.theme))
-        if (/^[a-z][a-z0-9-]*$/.test(key)) view.root.style.setProperty(`--tb-${key}`, String(value));
+        if (/^[a-z][a-z0-9-]*$/.test(key)) this.element.style.setProperty(`--tb-${key}`, String(value));
       refreshButton = button("refresh", "secondary");
       view.sync.append(refreshButton.root);
       if (this.user) view.user.append(this.user.host);

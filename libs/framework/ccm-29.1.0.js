@@ -10,7 +10,7 @@
  * @author André Kless <andre.kless@web.de>
  * @copyright 2014–2026 André Kless
  * @license MIT
- * @version 29.0.0
+ * @version 29.1.0
  */
 
 {
@@ -33,7 +33,7 @@
      *
      * @returns {ccm.types.versionNr} Version number of ccmjs.
      */
-    version: () => "29.0.0",
+    version: () => "29.1.0",
 
     /**
      * Asynchronous Loading of Resources
@@ -624,6 +624,7 @@
 
       // Create the host element for the instance.
       instance.host = document.createElement("div");
+      instance.host.setAttribute("data-ccm-component", component.name);
 
       // Create a shadow root for the instance if required.
       if (config.root !== false)

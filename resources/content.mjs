@@ -1,18 +1,18 @@
 /**
  * Default interface content for Teambuild.
  *
- * config.labels selects labels.en or labels.de through ccm.load; config.icons loads the shared icons.
+ * `config.labels` selects `labels.en` or `labels.de` through `ccm.load`; `config.icons` loads the shared icons.
  * Each instance merges overrides over the English defaults; both supplied language maps are complete.
  * Labels are plain text, including accessible names and messages. Keep their documented placeholders.
  * Icons accept trusted SVG markup, text symbols or an empty string; never insert user-provided markup.
- * HTML structure lives in views.mjs; the component patches changed text and icons in retained views.
+ * HTML structure lives in `views.mjs`; the component patches changed text and icons in retained views.
  *
  * @author André Kless <andre.kless@web.de>
  * @copyright 2026 André Kless
  * @license MIT
  */
 
-/** Complete language maps; load #labels.en (default) or #labels.de (demo). */
+/** The component and demo use #labels.en by default. Select #labels.de for German. */
 export const labels = {
   /** English interface text, accessible names and status/error messages. */
   en: {

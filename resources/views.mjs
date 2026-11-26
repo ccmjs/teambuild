@@ -17,7 +17,7 @@
 
 /** Persistent shell. Keep user empty: its child component is inserted after our events are bound. */
 export const main = app => app.ui.html`
-  <section class="teambuild">
+  <section>
     <div class="content" data-ref="content">
       <div class="toolbar">
         <div class="totals">

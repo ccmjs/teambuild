@@ -1,53 +1,27 @@
 /**
- * Load a named export with ["ccm.load", "./resources/configs.mjs#demo"].
- * demo uses its own dataset; realtime, manual and frozen share the seminar dataset.
- * Use the same backend URL for authentication and data, and match observe.key to data.key.
+ * Load a named export with `["ccm.load", "./resources/configs.mjs#demo"]`.
+ * Use the same backend URL for authentication and data, and match `observe.key` to `data.key`.
  */
 
-/** Shared formation with authenticated users and WebSocket observation. */
-export const realtime = {
-  maxMembers: 4,
-  maxTeams: 6,
-  teamNames: ["Ideenwerkstatt", "Perspektivwechsel", "Zukunftslabor"],
+const server = "https://kless.inf.h-brs.de/api/";
+
+/**
+ * English team formation with up to six teams of four. Changes to the demo dataset
+ * reach connected participants via WebSocket. Participants can register a CCM
+ * account or sign in with their CCM username and password.
+ */
+export const demo = {
   data: {
-    key: "seminar",
     store: ["ccm.store", {
-      name: "teambuild", url: "http://localhost:8080", observe: { key: "seminar" },
+      name: "teambuild", url: server, observe: { key: "demo" },
     }],
+    key: "demo",
     permissions: { access: { get: "all", set: "realm", del: "owner" } },
   },
-  user: ["ccm.instance", "././libs/user/ccm.user-1.0.0.min.mjs", {
-    // Reuse Teambuild's framework instead of loading the User release's older default.
-    ccm: "././libs/framework/ccm-29.0.0.min.js",
-    url: "http://localhost:8080", realm: "ccm", registration: true,
+  user: ["ccm.instance", "././libs/user/ccm.user-1.2.0.min.mjs", {
+    url: server, realm: "ccm", registration: true,
   }],
-};
-
-/** Same persistent data, manual refresh instead of WebSocket observation. */
-export const manual = {
-  ...realtime,
-  data: {
-    ...realtime.data,
-    store: ["ccm.store", { name: "teambuild", url: "http://localhost:8080" }],
-  },
-};
-
-/** UI freeze with a first-team exception for joining/leaving; renaming stays locked in every team. */
-export const frozen = {
-  ...realtime, editable: false, joinable: false, leavable: false,
-  teamOverrides: [{ joinable: true, leavable: true }],
-};
-
-/** Realtime demo with German labels and a separate dataset; all other options are inherited. */
-export const demo = {
-  ...realtime,
-  labels: ["ccm.load", "././resources/content.mjs#labels.de"],
-  data: {
-    ...realtime.data,
-    key: "demo",
-    store: [realtime.data.store[0], {
-      ...realtime.data.store[1],
-      observe: { ...realtime.data.store[1].observe, key: "demo" },
-    }],
-  },
+  maxTeams: 6,
+  maxMembers: 4,
+  teamNames: ["Idea Workshop", "New Perspectives", "Future Lab"],
 };

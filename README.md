@@ -6,28 +6,31 @@ Component logic and incremental UI updates live in `ccm.teambuild.mjs`; HTML
 templates live in `resources/views.mjs`, and labels and icons in
 `resources/content.mjs`. These resources, the stylesheet and the bundled,
 versioned `ccm-ui` module are loaded through `ccm.load` dependencies. No build step
-is required.
+is required. See the [changelog](CHANGELOG.md) for release notes and migration instructions.
 
 ## Embedding
 
-### From the CDN (v1.0.0)
+### From the CDN (v2.0.0)
 
 Paste this snippet into your page and replace `https://your-ccm-server.example`
-with your CCM server URL. Teambuild and User share ccmjs v29.0.0. All three
-modules below come from the pinned Teambuild release.
+with your CCM server URL. Teambuild and User share ccmjs v29.1.0. Each URL
+and its SHA-384 integrity value refer to a specific release.
 
 ```html
-<script src="https://cdn.jsdelivr.net/gh/ccmjs/teambuild@v1.0.0/libs/framework/ccm-29.0.0.min.js"></script>
+<script src="https://cdn.jsdelivr.net/gh/ccmjs/framework@v29.1.0/ccm-29.1.0.min.js"
+        integrity="sha384-+Ra3mH+gwP++yhMqYTOSnzIpDlhdMQINbkbEI8POBy4y7CYFng/c+KxtSJXiLsJA"
+        crossorigin="anonymous"></script>
 <div id="teams"></div>
 <script type="module">
-  const release = "https://cdn.jsdelivr.net/gh/ccmjs/teambuild@v1.0.0";
+  const teambuild = "https://cdn.jsdelivr.net/gh/ccmjs/teambuild@v2.0.0/ccm.teambuild-2.0.0.min.mjs#sha384-ofRNyvUlTqpTL6LWlyfAsWDVi1f/b+MOhwwwuP8USUpwWoRyZ1myZydkja/G6Yzg";
+  const user = "https://cdn.jsdelivr.net/gh/ccmjs/user@v1.2.0/ccm.user-1.2.0.min.mjs#sha384-N32UlGOG7Y4YaHbgnuRMpia9fzSqdJV+TpuuX2nmUEKZT8nYYAGTg30rMi/wjHpJ";
   const url = "https://your-ccm-server.example";
   const key = "seminar";
 
-  await ccm.start(`${release}/ccm.teambuild-1.0.0.min.mjs`, {
-    data: { key, store: ["ccm.store", { name: "teambuild", url, observe: { key } }] },
-    user: ["ccm.instance", `${release}/libs/user/ccm.user-1.0.0.min.mjs`, {
-      ccm: `${release}/libs/framework/ccm-29.0.0.min.js`, url, realm: "ccm"
+  await ccm.start(teambuild, {
+    data: { store: ["ccm.store", { name: "teambuild", url, observe: { key } }], key },
+    user: ["ccm.instance", user, {
+      url, realm: "ccm"
     }],
     maxMembers: 4
   }, document.querySelector("#teams"));
@@ -37,25 +40,24 @@ modules below come from the pinned Teambuild release.
 ### From a local checkout
 
 ```html
-<script src="./libs/framework/ccm-29.0.0.min.js"></script>
+<script src="./libs/framework/ccm-29.1.0.min.js"></script>
 <div id="teams"></div>
 <script type="module">
   await ccm.start("./ccm.teambuild.mjs", {
     data: {
-      key: "seminar",
       store: ["ccm.store", {
         name: "teambuild",
         url: "https://your-ccm-server.example",
         observe: { key: "seminar" }
-      }]
+      }],
+      key: "seminar"
     },
-    user: ["ccm.instance", "./libs/user/ccm.user-1.0.0.min.mjs", {
-      ccm: "./libs/framework/ccm-29.0.0.min.js",
+    user: ["ccm.instance", "./libs/user/ccm.user-1.2.0.min.mjs", {
       url: "https://your-ccm-server.example",
       realm: "ccm"
     }],
-    maxMembers: 4,
     maxTeams: 6,
+    maxMembers: 4,
     teamNames: ["Idea Workshop", "New Perspectives", "Future Lab"]
   }, document.querySelector("#teams"));
 </script>
@@ -65,21 +67,18 @@ The server must support the `ifMatch` write option described below. Deploy the
 accompanying extension in `ccm-server/lib/data.mjs` on the server. The bundled ccmjs v29 framework forwards this option. The component never falls back to unconditional
 overwrites.
 
-`index.html` provides an interactive demo with German team-building labels and the
-User component. The component's default labels are English. Open the page
-through an HTTP server. Authentication and team data use the local CCM server at
-`http://localhost:8080`. Teams are stored in the `teambuild` datastore under the
+`index.html` provides an interactive demo using the English `demo` preset. Open the page
+through an HTTP server. The demo uses CCM accounts only. Participants can register
+a new account or sign in with their CCM username and password.
+Authentication and team data use `https://kless.inf.h-brs.de/api/`. Teams are stored in the `teambuild` datastore under the
 `demo` key and survive page reloads. WebSocket observation is enabled: joins,
 departures and name changes appear automatically in every open demo instance.
 Without an existing dataset, the demo starts with one empty team; the first join
 creates the dataset on the server. Once signed in, users can join, switch teams,
 leave and rename their own team.
 
-`resources/configs.mjs` also provides `realtime`, `manual` and `frozen`
-configurations for the local CCM server. Load them with a dependency such as
-`["ccm.load", "./resources/configs.mjs#realtime"]`.
-These three variants share the `seminar` dataset; the demo uses its separate `demo`
-dataset. Keep the observation key equal to `data.key` and point authentication and
+Load the preset with `["ccm.load", "./resources/configs.mjs#demo"]`.
+Keep the observation key equal to `data.key` and point authentication and
 data access at the same backend.
 
 When `user` is configured, the User component renders its own sign-in button and,
@@ -95,26 +94,27 @@ area and the team formation is read-only.
 | `data.key` | `"teambuild"` | One dataset per formation; compound CCM keys are also supported |
 | `data.permissions` | See below | Access metadata applied when creating the dataset; `null` omits it |
 | `user` | Not set | Optional User component; login controls on the right of the toolbar |
-| `maxMembers` | `0` | Maximum members per team; `0` means unlimited |
+| `avatarSize` | `96` | Maximum thumbnail edge in pixels for a copied private profile upload |
 | `maxTeams` | `0` | Maximum number of teams; `0` means unlimited |
+| `maxMembers` | `0` | Maximum members per team; `0` means unlimited |
 | `teamNames` | `[]` | Preset names in team order |
-| `editable` | `true` | Members may rename their own team |
 | `joinable` | `true` | Users may join teams |
 | `leavable` | `true` | Members may leave their current team |
-| `teamOverrides` | `[]` | Per-team rules; index 0 applies to team 1 |
 | `allowSwitch` | `true` | Direct team switching; checks both departure and joining rules |
+| `editable` | `true` | Members may rename their own team |
 | `nameMaxLength` | `60` | Maximum length of an edited team name, using JavaScript string length |
-| `avatarSize` | `96` | Maximum thumbnail edge in pixels for a copied private profile upload |
-| `labels` | `["ccm.load", "././resources/content.mjs#labels.en"]` | English interface text, accessible names, hints and error messages; use `#labels.de` for German; partial overrides are merged |
-| `icons` | `["ccm.load", "././resources/content.mjs#icons"]` | Button icons as trusted inline SVG markup, text symbols or empty strings; partial overrides are merged |
-| `theme` | `{}` | CSS custom-property overrides without the `--tb-` prefix |
-| `css` | Stylesheet dependency | Replace or extend the styling through `ccm.load` |
-| `ui` | Bundled `ccm-ui` 1.0.0 | HTML templates, trusted SVG interpolation and declarative event binding |
-| `views` | `["ccm.load", "././resources/views.mjs"]` | Template module for the shell, team, member, free seat, button, image and editor; partial overrides are merged |
+| `teamOverrides` | `[]` | Per-team rules; index 0 applies to team 1 |
 | `refreshInterval` | `30000` | Background reconciliation interval in milliseconds when observation is enabled; `0` disables the timer |
 | `retryLimit` | `12` | Maximum conditional-write attempts per action, including the initial attempt |
+| `ui` | Bundled `ccm-ui` 1.0.0 | HTML templates, trusted SVG interpolation and declarative event binding |
+| `views` | `["ccm.load", "././resources/views.mjs"]` | Template module for the shell, team, member, free seat, button, image and editor; partial overrides are merged |
+| `css` | Stylesheet dependency | Replace or extend the styling through `ccm.load` |
+| `root` (ccmjs) | Open shadow root | Set to `false` for light DOM and supply a stylesheet scoped to your embedding container |
+| `theme` | `{}` | CSS custom-property overrides without the `--tb-` prefix |
 | `onchange` | Not set | Callback after a successful local join, leave or rename action |
 | `onerror` | Not set | Callback for loading, saving, observation, profile-image and extension errors |
+| `icons` | `["ccm.load", "././resources/content.mjs#icons"]` | Button icons as trusted inline SVG markup, text symbols or empty strings; partial overrides are merged |
+| `labels` | `["ccm.load", "././resources/content.mjs#labels.en"]` | English interface text, accessible names, hints and error messages; use `#labels.de` for German; partial overrides are merged |
 
 Every configuration property is documented in the component's `config`, including
 nested permissions, team override fields, theme keys, units and optional callback
@@ -126,15 +126,14 @@ use plain configuration values.
 
 ```js
 {
-  labels: { join: "Join", leave: "Leave team", refresh: "Refresh" },
+  theme: { accent: "#6045a0", "accent-hover": "#49327f", radius: "14px" },
   icons: { join: "+", leave: "↗", refresh: "↻" },
-  theme: { accent: "#6045a0", "accent-hover": "#49327f", radius: "14px" }
+  labels: { join: "Join", leave: "Leave team", refresh: "Refresh" }
 }
 ```
 
 `content.mjs` exports complete language maps as `labels.en` and `labels.de`, plus
-the shared `icons` object. The component defaults to English; the demo explicitly
-selects German:
+the shared `icons` object. To switch from the default English labels to German:
 
 ```js
 labels: ["ccm.load", "././resources/content.mjs#labels.de"]
@@ -147,8 +146,11 @@ are filled from the English labels and default icons. Supplied values take
 precedence, including empty strings. Each instance receives independent label and icon maps.
 The browser reuses the imported module; content is not loaded during UI updates.
 
-Additional theme keys are `background`, `surface`, `text`, `muted`, `border` and
-`font`. Supported label placeholders are `{number}` in `team` and `teamNumber`,
+The default layout uses the ccmjs tiles in the toolbar and rename dialog. Blue
+marks primary actions, green marks live updates and membership, and yellow marks
+empty teams. Set `theme.logo` to a CSS image such as `url("/assets/logo.svg")`.
+Use `positive` and `highlight` for the green and yellow accents. Additional theme
+keys are `background`, `surface`, `text`, `muted`, `border` and `font`. Supported label placeholders are `{number}` in `team` and `teamNumber`,
 `{team}` in `joined`, and `{max}` in `invalidName`. Team names and member names are
 always rendered as text.
 
@@ -172,9 +174,9 @@ it restricts subsequent joins.
 
 ```js
 {
-  editable: false,
   joinable: false,
   leavable: false,
+  editable: false,
   teamOverrides: [
     { joinable: true, leavable: true }
   ]
@@ -271,7 +273,7 @@ current dataset and restarts an interrupted or incomplete live connection. Once
 the server acknowledges observation, missed changes are reloaded and subsequent
 changes arrive automatically again.
 
-The bundled ccmjs v29.0.0 framework exposes the observation state through
+The bundled ccmjs v29.1.0 framework exposes the observation state through
 `getConnectionState()` and `onconnectionchange`. With a framework that does not
 provide this interface, the button text remains visible. It also remains visible
 when `icons.refresh` is empty.
@@ -424,11 +426,21 @@ accessor is closed on destruction; an externally supplied accessor stays open an
 remains the embedding app's responsibility.
 
 [resources/styles.css](resources/styles.css) groups styles by the toolbar, cards,
-members, buttons and editor. Native CSS nesting scopes these rules to `.teambuild`;
-the named `teambuild` container switches to a compact toolbar at 620 px of available
-content width. Each embedded instance responds independently of the viewport.
-[resources/configs.mjs](resources/configs.mjs) contains
-named configuration examples; [index.html](index.html) loads the demo through CCM.
+members, buttons and editor. The CCM content element (`.root`) holds the theme
+variables, typography, outer spacing and named query container. All component
+styles are nested under `.root` and scoped by the instance's shadow root.
+In DevTools, `data-ccm-component="teambuild"` identifies the outer host.
+The toolbar switches to a compact layout at 620 px of available content width.
+
+With `root: false`, the component and the page share the same CSS scope.
+For example, when mounting in `<div id="seminar-teams"></div>`, set
+`css: ["ccm.load", "./seminar-teams.css"]` alongside `root: false`. To keep the
+bundled layout, copy `resources/styles.css` into that file and change its outer
+selector from `.root` to `#seminar-teams > div > .root`. The intermediate
+`div` is the host element created by ccmjs.
+
+[index.html](index.html) loads the `demo` preset from
+[resources/configs.mjs](resources/configs.mjs) through CCM.
 The `libs/` directory contains bundled dependencies. Component behavior belongs in
 the component source, HTML structure in `resources/views.mjs`, styling in the
 stylesheet, text and icons in `resources/content.mjs`, and theme overrides in
@@ -436,9 +448,9 @@ stylesheet, text and icons in `resources/content.mjs`, and theme overrides in
 
 ## HTML templates
 
-`libs/ccm-ui/` includes `ccm-ui-1.0.0.min.mjs`, its source map and its MIT license,
-using the same versioned distribution as the User component. `config.ui` loads the
-module through CCM. `config.views` loads [resources/views.mjs](resources/views.mjs),
+When updating a dependency in `libs/`, include its versioned readable and minified
+files, source map and license together. For ccm-ui, `config.ui` loads
+`ccm-ui-1.0.0.min.mjs` through CCM. `config.views` loads [resources/views.mjs](resources/views.mjs),
 which exports each default factory by name. Every factory receives the instance
 as `app` and returns one fresh detached Element synchronously through `app.ui.html`.
 Do not return a Promise,
